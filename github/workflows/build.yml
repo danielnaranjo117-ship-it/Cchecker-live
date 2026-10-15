@@ -1,0 +1,4524 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.2'
+          channel: stable
+          cache: true
+
+      - name: Preparar proyecto
+        run: |
+          echo "=== CCheker Live v5.1 · auditoria aplicada ==="
+          flutter create --org com.cchekerx --project-name ccheker_live --platforms android ccheker_live
+          cd ccheker_live
+          rm -rf lib test
+          mkdir -p lib/screens
+
+      - name: Icono propio
+        run: |
+          cd ccheker_live
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          cat > /tmp/make_icon.py <<'PY'
+          import math, struct, zlib, os, sys
+
+          def lerp(a, b, t):
+              return a + (b - a) * t
+
+          def shield(x, y, k):
+              top, bot = -0.82 * k, 0.88 * k
+              if y < top or y > bot:
+                  return False
+              half = 0.66 * k
+              if y <= 0.0:
+                  rad = 0.20 * k
+                  if y < top + rad:
+                      dy = (top + rad) - y
+                      hw = half - rad + math.sqrt(max(0.0, rad * rad - dy * dy))
+                  else:
+                      hw = half
+              else:
+                  t = y / bot
+                  hw = half * math.sqrt(max(0.0, 1.0 - t * t))
+              return abs(x) <= hw
+
+          def seg(px, py, ax, ay, bx, by):
+              vx, vy = bx - ax, by - ay
+              wx, wy = px - ax, py - ay
+              L = vx * vx + vy * vy
+              t = 0.0 if L == 0 else max(0.0, min(1.0, (wx * vx + wy * vy) / L))
+              dx, dy = px - (ax + t * vx), py - (ay + t * vy)
+              return math.sqrt(dx * dx + dy * dy)
+
+          def sample(x, y):
+              r = 0.44
+              ax, ay = abs(x), abs(y)
+              dx, dy = max(0.0, ax - (1.0 - r)), max(0.0, ay - (1.0 - r))
+              if math.sqrt(dx * dx + dy * dy) > r:
+                  return (0, 0, 0, 0)
+              t = (y + 1.0) * 0.5
+              bg = (int(lerp(9, 19, t)), int(lerp(13, 28, t)), int(lerp(24, 48, t)), 255)
+              if shield(x, y, 1.0):
+                  g = max(0.0, min(1.0, (y + 0.85) / 1.70))
+                  col = (int(lerp(182, 60, g)), int(lerp(255, 224, g)), int(lerp(60, 255, g)), 255)
+                  if shield(x, y, 0.80):
+                      col = bg
+                      d = min(seg(x, y, -0.30, 0.00, -0.08, 0.24), seg(x, y, -0.08, 0.24, 0.32, -0.24))
+                      if d <= 0.075:
+                          col = (182, 255, 60, 255)
+                  return col
+              return bg
+
+          def png_bytes(size, rows):
+              raw = bytearray()
+              for row in rows:
+                  raw.append(0)
+                  for px in row:
+                      raw += bytes(px)
+              def chunk(tag, data):
+                  return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
+              out = b'\x89PNG\r\n\x1a\n'
+              out += chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0))
+              out += chunk(b'IDAT', zlib.compress(bytes(raw), 9))
+              out += chunk(b'IEND', b'')
+              return out
+
+          def render(size):
+              S = 3
+              n = S * S
+              rows = []
+              for j in range(size):
+                  row = []
+                  for i in range(size):
+                      rr = gg = bb = aa = 0
+                      for sy in range(S):
+                          for sx in range(S):
+                              x = ((i + (sx + 0.5) / S) / size) * 2.0 - 1.0
+                              y = ((j + (sy + 0.5) / S) / size) * 2.0 - 1.0
+                              c = sample(x, y)
+                              a = c[3]
+                              rr += c[0] * a
+                              gg += c[1] * a
+                              bb += c[2] * a
+                              aa += a
+                      if aa == 0:
+                          row.append((0, 0, 0, 0))
+                      else:
+                          row.append((rr // aa, gg // aa, bb // aa, aa // n))
+                  rows.append(row)
+              return rows
+
+          root = sys.argv[1]
+          for name, px in [('mdpi', 48), ('hdpi', 72), ('xhdpi', 96), ('xxhdpi', 144), ('xxxhdpi', 192)]:
+              d = os.path.join(root, 'mipmap-' + name)
+              os.makedirs(d, exist_ok=True)
+              open(os.path.join(d, 'ic_launcher.png'), 'wb').write(png_bytes(px, render(px)))
+          print('iconos listos')
+          PY
+          python3 /tmp/make_icon.py android/app/src/main/res
+
+      - name: Generar app
+        run: |
+          cd ccheker_live
+
+          cat > pubspec.yaml <<'YAML'
+          name: ccheker_live
+          description: Checker de tarjetas con cola masiva por isolates y boveda cifrada.
+          publish_to: 'none'
+          version: 5.1.0+6
+
+          environment:
+            sdk: '>=3.3.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            flutter_riverpod: ^2.5.1
+            shared_preferences: ^2.2.3
+            http: ^1.2.1
+            crypto: ^3.0.3
+            encrypt: ^5.0.3
+            path_provider: ^2.1.4
+            connectivity_plus: ^6.0.3
+            share_plus: ^7.2.1
+            local_auth: ^2.2.0
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^4.0.0
+
+          flutter:
+            uses-material-design: true
+          YAML
+
+          cat > analysis_options.yaml <<'YAML'
+          include: package:flutter_lints/flutter.yaml
+
+          linter:
+            rules:
+              prefer_const_constructors: false
+              use_build_context_synchronously: false
+              depend_on_referenced_packages: false
+          YAML
+
+          cat > lib/core.dart <<'DART'
+          import 'dart:math';
+
+          const appName = 'CCheker Live';
+          const appVersion = '5.1.0';
+          const appBuild = '5.1.0+6';
+          const appTag = 'v5.1';
+
+          const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
+          const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
+          const dorkillUrl = 'https://api.dorkill.com/v1/check';
+          const defaultProbe = 'https://www.google.com/generate_204';
+
+          String newId() {
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            final r = Random.secure();
+            return List.generate(12, (_) => chars[r.nextInt(chars.length)]).join();
+          }
+
+          String maskPan(String pan) {
+            if (pan.length < 10) return pan;
+            return '${pan.substring(0, 6)}******${pan.substring(pan.length - 4)}';
+          }
+
+          String fmtInt(int n) {
+            final s = n.abs().toString();
+            final b = StringBuffer();
+            for (var i = 0; i < s.length; i++) {
+              if (i > 0 && (s.length - i) % 3 == 0) b.write('.');
+              b.write(s[i]);
+            }
+            return '${n < 0 ? '-' : ''}$b';
+          }
+
+          String fmtPct(double v) => '${(v * 100).toStringAsFixed(1)}%';
+
+          String fmtSecs(int s) {
+            if (s < 60) return '${s}s';
+            final m = s ~/ 60;
+            final r = s % 60;
+            return '${m}m ${r}s';
+          }
+
+          int luhnSum(String pan) {
+            var sum = 0;
+            var alt = false;
+            for (var i = pan.length - 1; i >= 0; i--) {
+              var d = pan.codeUnitAt(i) - 48;
+              if (d < 0 || d > 9) return -1;
+              if (alt) {
+                d *= 2;
+                if (d > 9) d -= 9;
+              }
+              sum += d;
+              alt = !alt;
+            }
+            return sum;
+          }
+
+          bool luhn(String pan) {
+            if (pan.length < 12 || pan.length > 19) return false;
+            final s = luhnSum(pan);
+            return s > 0 && s % 10 == 0;
+          }
+
+          String fixLuhn(String pan) {
+            if (pan.length < 2) return pan;
+            final body = pan.substring(0, pan.length - 1);
+            for (var d = 0; d <= 9; d++) {
+              final cand = '$body$d';
+              if (luhn(cand)) return cand;
+            }
+            return pan;
+          }
+
+          String schemeOf(String pan) {
+            if (pan.isEmpty) return '';
+            if (pan.startsWith('4')) return 'visa';
+            final two = pan.length >= 2 ? int.tryParse(pan.substring(0, 2)) ?? 0 : 0;
+            final three = pan.length >= 3 ? int.tryParse(pan.substring(0, 3)) ?? 0 : 0;
+            final four = pan.length >= 4 ? int.tryParse(pan.substring(0, 4)) ?? 0 : 0;
+            if (two >= 51 && two <= 55) return 'mastercard';
+            if (four >= 2221 && four <= 2720) return 'mastercard';
+            if (three >= 300 && three <= 305) return 'diners';
+            if (two == 36 || two == 38 || two == 39) return 'diners';
+            if (four == 6011 || three == 65 || (three >= 644 && three <= 649)) return 'discover';
+            if (four >= 3528 && four <= 3589) return 'jcb';
+            if (two == 34 || two == 37) return 'amex';
+            if (two == 62) return 'unionpay';
+            return 'otra';
+          }
+
+          const schemeNames = {
+            'visa': 'Visa',
+            'mastercard': 'Mastercard',
+            'amex': 'Amex',
+            'discover': 'Discover',
+            'jcb': 'JCB',
+            'diners': 'Diners',
+            'unionpay': 'UnionPay',
+            'otra': 'Otra',
+          };
+
+          const countryNames = {
+            'US': 'Estados Unidos',
+            'VE': 'Venezuela',
+            'CO': 'Colombia',
+            'BR': 'Brasil',
+            'MX': 'Mexico',
+            'AR': 'Argentina',
+            'CL': 'Chile',
+            'PE': 'Peru',
+            'ES': 'Espana',
+            'GB': 'Reino Unido',
+            'CA': 'Canada',
+            'DE': 'Alemania',
+            'FR': 'Francia',
+            'IT': 'Italia',
+            'JP': 'Japon',
+            'CN': 'China',
+            'IN': 'India',
+            'RU': 'Rusia',
+            'TR': 'Turquia',
+            'PA': 'Panama',
+          };
+
+          String flagEmoji(String cc) {
+            if (cc.length != 2) return '';
+            const base = 0x1F1E6;
+            final a = cc.toUpperCase().codeUnitAt(0) - 65;
+            final b = cc.toUpperCase().codeUnitAt(1) - 65;
+            if (a < 0 || a > 25 || b < 0 || b > 25) return '';
+            return String.fromCharCodes([base + a, base + b]);
+          }
+
+          bool isExpired(int mm, int yy) {
+            final now = DateTime.now();
+            final curY = now.year % 100;
+            if (yy > curY) return false;
+            if (yy < curY) return true;
+            return mm < now.month;
+          }
+          DART
+
+          cat > lib/theme.dart <<'DART'
+          import 'package:flutter/material.dart';
+
+          class AppColors {
+            static const bg = Color(0xFF0A0B0F);
+            static const bgElevated = Color(0xFF12141C);
+            static const glass = Color(0xFF1A1D28);
+            static const glassStroke = Color(0xFF262A38);
+            static const lime = Color(0xFFB6FF3C);
+            static const cyan = Color(0xFF3CE0FF);
+            static const violet = Color(0xFFA78BFA);
+            static const amber = Color(0xFFFFC24B);
+            static const red = Color(0xFFFF5C5C);
+            static const grey = Color(0xFF8A93A8);
+            static const textHi = Color(0xFFF2F4F8);
+            static const textMid = Color(0xFFA8AFC2);
+            static const textLo = Color(0xFF5C6478);
+          }
+
+          class AppTextStyles {
+            static const h1 = TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppColors.textHi, letterSpacing: -0.5);
+            static const h2 = TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: AppColors.textHi, letterSpacing: -0.3);
+            static const body = TextStyle(fontSize: 14, color: AppColors.textHi, height: 1.35);
+            static const caption = TextStyle(fontSize: 12, color: AppColors.textMid, height: 1.35);
+            static const tiny = TextStyle(fontSize: 10, color: AppColors.textLo, height: 1.2);
+            static const mono = TextStyle(fontFamily: 'monospace', fontSize: 13, color: AppColors.textHi, letterSpacing: 0.2);
+          }
+
+          const brandGradient = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [AppColors.lime, AppColors.cyan],
+          );
+
+          ThemeData buildTheme() {
+            final base = ThemeData.dark(useMaterial3: true);
+            return base.copyWith(
+              scaffoldBackgroundColor: AppColors.bg,
+              colorScheme: base.colorScheme.copyWith(
+                primary: AppColors.lime,
+                secondary: AppColors.cyan,
+                surface: AppColors.bgElevated,
+                error: AppColors.red,
+              ),
+              appBarTheme: const AppBarTheme(
+                backgroundColor: AppColors.bg,
+                elevation: 0,
+                centerTitle: false,
+                titleTextStyle: AppTextStyles.h2,
+              ),
+              inputDecorationTheme: InputDecorationTheme(
+                filled: true,
+                fillColor: AppColors.bgElevated,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: AppColors.glassStroke)),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: AppColors.glassStroke)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: AppColors.lime)),
+              ),
+              sliderTheme: const SliderThemeData(
+                activeTrackColor: AppColors.lime,
+                thumbColor: AppColors.lime,
+                inactiveTrackColor: AppColors.glass,
+              ),
+              snackBarTheme: const SnackBarThemeData(
+                backgroundColor: AppColors.glass,
+                contentTextStyle: AppTextStyles.body,
+                behavior: SnackBarBehavior.floating,
+              ),
+              textSelectionTheme: const TextSelectionThemeData(cursorColor: AppColors.lime),
+            );
+          }
+          DART
+
+          cat > lib/logo.dart <<'DART'
+          import 'package:flutter/material.dart';
+
+          import 'theme.dart';
+
+          class LogoMark extends StatelessWidget {
+            const LogoMark({super.key, this.size = 30});
+            final double size;
+
+            @override
+            Widget build(BuildContext context) =>
+                SizedBox(width: size, height: size, child: CustomPaint(painter: _LogoPainter()));
+          }
+
+          class _LogoPainter extends CustomPainter {
+            @override
+            void paint(Canvas canvas, Size s) {
+              final w = s.width;
+              final h = s.height;
+              final full = Rect.fromLTWH(0, 0, w, h);
+
+              canvas.drawRRect(
+                RRect.fromRectAndRadius(full, Radius.circular(w * 0.28)),
+                Paint()
+                  ..shader = const LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0xFF0B0D18), Color(0xFF161E34)],
+                  ).createShader(full),
+              );
+
+              canvas.drawPath(_shield(w, h), Paint()..shader = brandGradient.createShader(full));
+              canvas.drawPath(_shield(w, h, inset: 0.13), Paint()..color = const Color(0xFF0B0D18));
+
+              final check = Path()
+                ..moveTo(w * 0.33, h * 0.51)
+                ..lineTo(w * 0.45, h * 0.64)
+                ..lineTo(w * 0.68, h * 0.38);
+
+              canvas.drawPath(
+                check,
+                Paint()
+                  ..color = AppColors.lime
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = w * 0.085
+                  ..strokeCap = StrokeCap.round
+                  ..strokeJoin = StrokeJoin.round,
+              );
+            }
+
+            Path _shield(double w, double h, {double inset = 0}) {
+              final l = w * (0.08 + inset);
+              final r = w * (0.92 - inset);
+              final t = h * (0.06 + inset);
+              final b = h * (0.96 - inset);
+              final sh = h * (0.30 + inset * 0.4);
+              return Path()
+                ..moveTo(w * 0.5, t)
+                ..lineTo(r, sh)
+                ..lineTo(r, h * 0.55)
+                ..quadraticBezierTo(r, b - h * 0.12, w * 0.5, b)
+                ..quadraticBezierTo(l, b - h * 0.12, l, h * 0.55)
+                ..lineTo(l, sh)
+                ..close();
+            }
+
+            @override
+            bool shouldRepaint(covariant _LogoPainter old) => false;
+          }
+          DART
+
+          cat > lib/widgets.dart <<'DART'
+          import 'package:flutter/material.dart';
+
+          import 'theme.dart';
+
+          class GlassPanel extends StatelessWidget {
+            const GlassPanel({super.key, required this.child, this.padding = const EdgeInsets.all(16)});
+            final Widget child;
+            final EdgeInsets padding;
+
+            @override
+            Widget build(BuildContext context) => Container(
+                  padding: padding,
+                  decoration: BoxDecoration(
+                    color: AppColors.glass.withOpacity(0.55),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: AppColors.glassStroke),
+                  ),
+                  child: child,
+                );
+          }
+
+          class NeonButton extends StatelessWidget {
+            const NeonButton({
+              super.key,
+              required this.label,
+              required this.onPressed,
+              this.icon,
+              this.color = AppColors.lime,
+              this.expand = false,
+            });
+
+            final String label;
+            final VoidCallback? onPressed;
+            final IconData? icon;
+            final Color color;
+            final bool expand;
+
+            @override
+            Widget build(BuildContext context) {
+              final c = onPressed == null ? AppColors.textLo : color;
+
+              final btn = GestureDetector(
+                onTap: onPressed,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: c.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: c.withOpacity(0.5)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (icon != null) ...[Icon(icon, size: 16, color: c), const SizedBox(width: 8)],
+                      Text(
+                        label,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+
+              return expand ? SizedBox(width: double.infinity, child: btn) : btn;
+            }
+          }
+
+          class SectionHeader extends StatelessWidget {
+            const SectionHeader(this.text, {super.key});
+            final String text;
+
+            @override
+            Widget build(BuildContext context) => Padding(
+                  padding: const EdgeInsets.only(top: 22, bottom: 10),
+                  child: Row(
+                    children: [
+                      Container(width: 3, height: 14, decoration: BoxDecoration(color: AppColors.lime, borderRadius: BorderRadius.circular(2))),
+                      const SizedBox(width: 8),
+                      Text(
+                        text.toUpperCase(),
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.textMid, letterSpacing: 1.4),
+                      ),
+                    ],
+                  ),
+                );
+          }
+
+          class StatCard extends StatelessWidget {
+            const StatCard({super.key, required this.label, required this.value, this.color = AppColors.textHi});
+            final String label;
+            final String value;
+            final Color color;
+
+            @override
+            Widget build(BuildContext context) => Expanded(
+                  child: GlassPanel(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(value, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: color)),
+                        const SizedBox(height: 2),
+                        Text(label, style: AppTextStyles.tiny),
+                      ],
+                    ),
+                  ),
+                );
+          }
+
+          class StatusPill extends StatelessWidget {
+            const StatusPill({super.key, required this.text, required this.color});
+            final String text;
+            final Color color;
+
+            @override
+            Widget build(BuildContext context) => Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: color.withOpacity(0.4)),
+                  ),
+                  child: Text(text, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: color)),
+                );
+          }
+
+          class EmptyState extends StatelessWidget {
+            const EmptyState({super.key, required this.text, this.icon = Icons.inbox_outlined});
+            final String text;
+            final IconData icon;
+
+            @override
+            Widget build(BuildContext context) => Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(icon, size: 42, color: AppColors.textLo),
+                      const SizedBox(height: 12),
+                      Text(text, style: AppTextStyles.caption),
+                    ],
+                  ),
+                );
+          }
+
+          class SegmentedProgress extends StatelessWidget {
+            const SegmentedProgress({super.key, required this.value, this.color = AppColors.lime});
+            final double value;
+            final Color color;
+
+            @override
+            Widget build(BuildContext context) => ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: value.clamp(0, 1).toDouble(),
+                    minHeight: 10,
+                    backgroundColor: AppColors.glass,
+                    valueColor: AlwaysStoppedAnimation<Color>(color),
+                  ),
+                );
+          }
+
+          class CardRow extends StatelessWidget {
+            const CardRow({super.key, required this.child, this.onTap, this.onLongPress, this.selected = false});
+            final Widget child;
+            final VoidCallback? onTap;
+            final VoidCallback? onLongPress;
+            final bool selected;
+
+            @override
+            Widget build(BuildContext context) => GestureDetector(
+                  onTap: onTap,
+                  onLongPress: onLongPress,
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: selected ? AppColors.lime.withOpacity(0.08) : AppColors.glass.withOpacity(0.5),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: selected ? AppColors.lime.withOpacity(0.5) : AppColors.glassStroke),
+                    ),
+                    child: child,
+                  ),
+                );
+          }
+          DART
+
+          cat > lib/net.dart <<'DART'
+          import 'dart:async';
+          import 'dart:convert';
+          import 'dart:io';
+          import 'dart:math';
+
+          import 'package:connectivity_plus/connectivity_plus.dart';
+          import 'package:http/http.dart' as http;
+
+          import 'core.dart';
+
+          class NetSense {
+            NetSense._();
+            static final NetSense i = NetSense._();
+
+            bool online = true;
+            bool wifi = true;
+            int latencyMs = 0;
+            int concurrency = 6;
+            bool autoTune = true;
+
+            final _ctrl = StreamController<void>.broadcast();
+            Stream<void> get changes => _ctrl.stream;
+
+            StreamSubscription<List<ConnectivityResult>>? _sub;
+            Timer? _beat;
+
+            void start() {
+              _sub?.cancel();
+              _sub = Connectivity().onConnectivityChanged.listen(_apply);
+              Connectivity().checkConnectivity().then(_apply).catchError((_) {});
+              _beat ??= Timer.periodic(const Duration(seconds: 25), (_) => ping());
+            }
+
+            void stop() {
+              _sub?.cancel();
+              _sub = null;
+              _beat?.cancel();
+              _beat = null;
+            }
+
+            void _apply(List<ConnectivityResult> res) {
+              final was = online;
+              online = res.isNotEmpty && !res.contains(ConnectivityResult.none);
+              wifi = res.contains(ConnectivityResult.wifi) || res.contains(ConnectivityResult.ethernet);
+              if (was != online) _ctrl.add(null);
+              _tune();
+            }
+
+            Future<void> ping() async {
+              final sw = Stopwatch()..start();
+              try {
+                final r = await http.get(Uri.parse(defaultProbe)).timeout(const Duration(seconds: 8));
+                latencyMs = sw.elapsedMilliseconds;
+                online = r.statusCode < 500;
+              } catch (_) {
+                latencyMs = 0;
+                online = false;
+              }
+              _tune();
+            }
+
+            void _tune() {
+              if (!autoTune) {
+                _ctrl.add(null);
+                return;
+              }
+              concurrency = !online
+                  ? 2
+                  : latencyMs == 0
+                      ? 5
+                      : latencyMs < 300
+                          ? 10
+                          : latencyMs < 900
+                              ? 5
+                              : 2;
+              _ctrl.add(null);
+            }
+
+            int backoff(int attempt) => min(8000, 250 * pow(2, attempt).toInt());
+
+            static const dohEndpoints = [
+              'https://cloudflare-dns.com/dns-query',
+              'https://dns.google/resolve',
+            ];
+
+            Future<List<String>> resolve(String host) async {
+              for (final ep in dohEndpoints) {
+                try {
+                  final uri = Uri.parse(ep).replace(queryParameters: {'name': host, 'type': 'A'});
+                  final r = await http
+                      .get(uri, headers: const {'accept': 'application/dns-json'})
+                      .timeout(const Duration(seconds: 6));
+                  if (r.statusCode != 200) continue;
+                  final j = jsonDecode(r.body) as Map<String, dynamic>;
+                  final ans = (j['Answer'] as List?) ?? const [];
+                  final ips = ans
+                      .where((a) => (a as Map)['type'] == 1)
+                      .map((a) => (a as Map)['data'] as String)
+                      .where((ip) => InternetAddress.tryParse(ip) != null)
+                      .toList();
+                  if (ips.isNotEmpty) return ips;
+                } catch (_) {}
+              }
+              return const [];
+            }
+          }
+          DART
+
+          cat > lib/models.dart <<'DART'
+          import 'core.dart';
+
+          enum CheckStatus { unchecked, checking, live, dead, unknown }
+
+          extension CheckStatusX on CheckStatus {
+            String get label => switch (this) {
+                  CheckStatus.unchecked => 'sin revisar',
+                  CheckStatus.checking => 'revisando',
+                  CheckStatus.live => 'viva',
+                  CheckStatus.dead => 'muerta',
+                  CheckStatus.unknown => 'incierta',
+                };
+          }
+
+          class CreditCard {
+            CreditCard({
+              required this.id,
+              required this.pan,
+              required this.expMonth,
+              required this.expYear,
+              required this.cvv,
+              this.brand = '',
+              this.bank = '',
+              this.country = '',
+              this.cardType = '',
+              this.level = '',
+              this.status = CheckStatus.unchecked,
+              this.message = '',
+              this.gateway = '',
+              this.latencyMs = 0,
+              this.checkedAt,
+              this.bin = '',
+            });
+
+            final String id;
+            final String pan;
+            final int expMonth;
+            final int expYear;
+            final String cvv;
+            final String brand;
+            final String bank;
+            final String country;
+            final String cardType;
+            final String level;
+            final CheckStatus status;
+            final String message;
+            final String gateway;
+            final int latencyMs;
+            final DateTime? checkedAt;
+            final String bin;
+
+            bool get expired => isExpired(expMonth, expYear);
+            String get expLabel => '${expMonth.toString().padLeft(2, '0')}/${expYear.toString().padLeft(2, '0')}';
+            String get line => '$pan|${expMonth.toString().padLeft(2, '0')}|${expYear.toString().padLeft(2, '0')}|$cvv';
+
+            CreditCard copyWith({
+              String? pan,
+              int? expMonth,
+              int? expYear,
+              String? cvv,
+              String? brand,
+              String? bank,
+              String? country,
+              String? cardType,
+              String? level,
+              CheckStatus? status,
+              String? message,
+              String? gateway,
+              int? latencyMs,
+              DateTime? checkedAt,
+              String? bin,
+            }) =>
+                CreditCard(
+                  id: id,
+                  pan: pan ?? this.pan,
+                  expMonth: expMonth ?? this.expMonth,
+                  expYear: expYear ?? this.expYear,
+                  cvv: cvv ?? this.cvv,
+                  brand: brand ?? this.brand,
+                  bank: bank ?? this.bank,
+                  country: country ?? this.country,
+                  cardType: cardType ?? this.cardType,
+                  level: level ?? this.level,
+                  status: status ?? this.status,
+                  message: message ?? this.message,
+                  gateway: gateway ?? this.gateway,
+                  latencyMs: latencyMs ?? this.latencyMs,
+                  checkedAt: checkedAt ?? this.checkedAt,
+                  bin: bin ?? this.bin,
+                );
+
+            Map<String, dynamic> toJson() => {
+                  'id': id,
+                  'pan': pan,
+                  'm': expMonth,
+                  'y': expYear,
+                  'cvv': cvv,
+                  'brand': brand,
+                  'bank': bank,
+                  'country': country,
+                  'type': cardType,
+                  'level': level,
+                  'status': status.name,
+                  'msg': message,
+                  'gw': gateway,
+                  'ms': latencyMs,
+                  'at': checkedAt?.toIso8601String(),
+                  'bin': bin,
+                };
+
+            static CreditCard fromJson(Map<String, dynamic> j) => CreditCard(
+                  id: j['id'] as String,
+                  pan: j['pan'] as String,
+                  expMonth: (j['m'] as num).toInt(),
+                  expYear: (j['y'] as num).toInt(),
+                  cvv: (j['cvv'] ?? '').toString(),
+                  brand: (j['brand'] ?? '').toString(),
+                  bank: (j['bank'] ?? '').toString(),
+                  country: (j['country'] ?? '').toString(),
+                  cardType: (j['type'] ?? '').toString(),
+                  level: (j['level'] ?? '').toString(),
+                  status: CheckStatus.values.firstWhere((s) => s.name == j['status'], orElse: () => CheckStatus.unchecked),
+                  message: (j['msg'] ?? '').toString(),
+                  gateway: (j['gw'] ?? '').toString(),
+                  latencyMs: ((j['ms'] ?? 0) as num).toInt(),
+                  checkedAt: j['at'] == null ? null : DateTime.tryParse(j['at'] as String),
+                  bin: (j['bin'] ?? '').toString(),
+                );
+          }
+
+          class BinInfo {
+            const BinInfo({this.bank = '', this.country = '', this.cardType = '', this.level = ''});
+            final String bank;
+            final String country;
+            final String cardType;
+            final String level;
+
+            Map<String, dynamic> toJson() => {'b': bank, 'c': country, 't': cardType, 'l': level};
+
+            static BinInfo fromJson(Map<String, dynamic> j) => BinInfo(
+                  bank: (j['b'] ?? '').toString(),
+                  country: (j['c'] ?? '').toString(),
+                  cardType: (j['t'] ?? '').toString(),
+                  level: (j['l'] ?? '').toString(),
+                );
+          }
+
+          enum ProxyKind { http, socks5 }
+
+          enum ProxyHealth { unknown, up, down }
+
+          class ProxyNode {
+            ProxyNode({
+              required this.id,
+              required this.host,
+              required this.port,
+              this.user = '',
+              this.pass = '',
+              this.kind = ProxyKind.http,
+              this.health = ProxyHealth.unknown,
+              this.latencyMs = 0,
+            });
+
+            final String id;
+            final String host;
+            final int port;
+            final String user;
+            final String pass;
+            final ProxyKind kind;
+            ProxyHealth health;
+            int latencyMs;
+
+            String get label => '$host:$port';
+
+            Map<String, dynamic> toJson() => {
+                  'id': id,
+                  'host': host,
+                  'port': port,
+                  'u': user,
+                  'p': pass,
+                  'k': kind.name,
+                  'h': health.name,
+                  'ms': latencyMs,
+                };
+
+            static ProxyNode fromJson(Map<String, dynamic> j) => ProxyNode(
+                  id: j['id'] as String,
+                  host: j['host'] as String,
+                  port: (j['port'] as num).toInt(),
+                  user: (j['u'] ?? '').toString(),
+                  pass: (j['p'] ?? '').toString(),
+                  kind: ProxyKind.values.firstWhere((k) => k.name == j['k'], orElse: () => ProxyKind.http),
+                  health: ProxyHealth.values.firstWhere((h) => h.name == j['h'], orElse: () => ProxyHealth.unknown),
+                  latencyMs: ((j['ms'] ?? 0) as num).toInt(),
+                );
+          }
+
+          class ImportResult {
+            ImportResult({required this.cards, this.duplicates = 0, this.junk = 0, this.fixed = 0, this.expired = 0});
+            final List<CreditCard> cards;
+            final int duplicates;
+            final int junk;
+            final int fixed;
+            final int expired;
+          }
+
+          class Settings {
+            const Settings({
+              this.engine = 'stripe',
+              this.stripeKey = stripePk,
+              this.dorkillKey = '',
+              this.retries = 1,
+              this.useProxies = false,
+              this.autoTune = true,
+              this.doh = true,
+              this.proxySticky = false,
+              this.wifiOnly = true,
+              this.concurrency = 6,
+              this.timeoutSec = 20,
+              this.probeUrl = defaultProbe,
+              this.biometrics = false,
+              this.autoLockMin = 5,
+              this.offlineDb = false,
+            });
+
+            final String engine;
+            final String stripeKey;
+            final String dorkillKey;
+            final int retries;
+            final bool useProxies;
+            final bool autoTune;
+            final bool doh;
+            final bool proxySticky;
+            final bool wifiOnly;
+            final int concurrency;
+            final int timeoutSec;
+            final String probeUrl;
+            final bool biometrics;
+            final int autoLockMin;
+            final bool offlineDb;
+
+            Settings copyWith({
+              String? engine,
+              String? stripeKey,
+              String? dorkillKey,
+              int? retries,
+              bool? useProxies,
+              bool? autoTune,
+              bool? doh,
+              bool? proxySticky,
+              bool? wifiOnly,
+              int? concurrency,
+              int? timeoutSec,
+              String? probeUrl,
+              bool? biometrics,
+              int? autoLockMin,
+              bool? offlineDb,
+            }) =>
+                Settings(
+                  engine: engine ?? this.engine,
+                  stripeKey: stripeKey ?? this.stripeKey,
+                  dorkillKey: dorkillKey ?? this.dorkillKey,
+                  retries: retries ?? this.retries,
+                  useProxies: useProxies ?? this.useProxies,
+                  autoTune: autoTune ?? this.autoTune,
+                  doh: doh ?? this.doh,
+                  proxySticky: proxySticky ?? this.proxySticky,
+                  wifiOnly: wifiOnly ?? this.wifiOnly,
+                  concurrency: concurrency ?? this.concurrency,
+                  timeoutSec: timeoutSec ?? this.timeoutSec,
+                  probeUrl: probeUrl ?? this.probeUrl,
+                  biometrics: biometrics ?? this.biometrics,
+                  autoLockMin: autoLockMin ?? this.autoLockMin,
+                  offlineDb: offlineDb ?? this.offlineDb,
+                );
+
+            Map<String, dynamic> toJson() => {
+                  'engine': engine,
+                  'skey': stripeKey,
+                  'dkey': dorkillKey,
+                  'retries': retries,
+                  'useProxies': useProxies,
+                  'autoTune': autoTune,
+                  'doh': doh,
+                  'proxySticky': proxySticky,
+                  'wifiOnly': wifiOnly,
+                  'concurrency': concurrency,
+                  'timeout': timeoutSec,
+                  'probe': probeUrl,
+                  'bio': biometrics,
+                  'lock': autoLockMin,
+                  'offline': offlineDb,
+                };
+
+            static Settings fromJson(Map<String, dynamic> j) => Settings(
+                  engine: (j['engine'] ?? 'stripe').toString(),
+                  stripeKey: (j['skey'] ?? stripePk).toString(),
+                  dorkillKey: (j['dkey'] ?? '').toString(),
+                  retries: ((j['retries'] ?? 1) as num).toInt(),
+                  useProxies: (j['useProxies'] ?? false) as bool,
+                  autoTune: (j['autoTune'] ?? true) as bool,
+                  doh: (j['doh'] ?? true) as bool,
+                  proxySticky: (j['proxySticky'] ?? false) as bool,
+                  wifiOnly: (j['wifiOnly'] ?? true) as bool,
+                  concurrency: ((j['concurrency'] ?? 6) as num).toInt(),
+                  timeoutSec: ((j['timeout'] ?? 20) as num).toInt(),
+                  probeUrl: (j['probe'] ?? defaultProbe).toString(),
+                  biometrics: (j['bio'] ?? false) as bool,
+                  autoLockMin: ((j['lock'] ?? 5) as num).toInt(),
+                  offlineDb: (j['offline'] ?? false) as bool,
+                );
+          }
+
+          class BinStatus {
+            const BinStatus({this.installed = false, this.busy = false, this.count = 0, this.note = ''});
+            final bool installed;
+            final bool busy;
+            final int count;
+            final String note;
+
+            BinStatus copyWith({bool? installed, bool? busy, int? count, String? note}) => BinStatus(
+                  installed: installed ?? this.installed,
+                  busy: busy ?? this.busy,
+                  count: count ?? this.count,
+                  note: note ?? this.note,
+                );
+          }
+          DART
+
+          cat > lib/repos.dart <<'DART'
+          import 'dart:convert';
+          import 'dart:math';
+
+          import 'package:crypto/crypto.dart';
+          import 'package:encrypt/encrypt.dart' as enc;
+          import 'package:shared_preferences/shared_preferences.dart';
+
+          class Vault {
+            Vault._();
+            static final Vault i = Vault._();
+
+            SharedPreferences? _sp;
+            Map<String, dynamic> data = {};
+            bool _unlocked = false;
+            String _pass = '';
+
+            bool get hasPassword => (_sp?.getString('vault_hash') ?? '').isNotEmpty;
+            bool get unlocked => _unlocked;
+            bool get setupDone => _sp?.getBool('setup_done') ?? false;
+
+            Future<void> boot() async {
+              _sp = await SharedPreferences.getInstance();
+              data = {};
+              _unlocked = !hasPassword;
+              if (_unlocked) await _load();
+            }
+
+            Future<void> markSetup() async {
+              await _sp?.setBool('setup_done', true);
+            }
+
+            Future<bool> unlock(String pass) async {
+              if (!hasPassword) {
+                _unlocked = true;
+                await _load();
+                return true;
+              }
+              if (hashPass(pass) != _sp!.getString('vault_hash')) return false;
+              _pass = pass;
+              _unlocked = true;
+              await _load();
+              return true;
+            }
+
+            void lock() {
+              _unlocked = false;
+              data = {};
+              _pass = '';
+            }
+
+            Future<void> setPassword(String pass) async {
+              if (pass.isEmpty) {
+                await _sp!.remove('vault_hash');
+                await _sp!.remove('vault_blob');
+                await _sp!.remove('vault_salt');
+                await _sp!.remove('vault_bio');
+                _pass = '';
+                _unlocked = true;
+                await save();
+                return;
+              }
+
+              final salt = _sp!.getString('vault_salt') ?? _rand(16);
+              await _sp!.setString('vault_salt', salt);
+              await _sp!.setString('vault_hash', _hash(pass, salt));
+              _pass = pass;
+              _unlocked = true;
+              await save();
+            }
+
+            String? get storedPass {
+              final v = _sp?.getString('vault_bio');
+              if (v == null || v.isEmpty) return null;
+              try {
+                return utf8.decode(base64.decode(v));
+              } catch (_) {
+                return null;
+              }
+            }
+
+            Future<void> rememberPass() async {
+              if (_pass.isEmpty) {
+                await _sp?.remove('vault_bio');
+                return;
+              }
+              await _sp?.setString('vault_bio', base64.encode(utf8.encode(_pass)));
+            }
+
+            Future<void> forgetPass() async {
+              await _sp?.remove('vault_bio');
+            }
+
+            String hashPass(String pass) => _hash(pass, _sp?.getString('vault_salt') ?? '');
+
+            String _hash(String pass, String salt) => sha256.convert(utf8.encode('$salt|$pass|ccheker')).toString();
+
+            String _rand(int n) {
+              final r = Random.secure();
+              return List.generate(n, (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+            }
+
+            Future<void> _load() async {
+              final blob = _sp!.getString('vault_blob');
+              if (blob == null || blob.isEmpty) {
+                data = {};
+                return;
+              }
+              try {
+                data = jsonDecode(_pass.isEmpty ? blob : _decrypt(blob)) as Map<String, dynamic>;
+              } catch (_) {
+                data = {};
+              }
+            }
+
+            Future<void> save() async {
+              if (!_unlocked) return;
+              final txt = jsonEncode(data);
+              await _sp!.setString('vault_blob', _pass.isEmpty ? txt : _encrypt(txt));
+            }
+
+            String _key() => _hash(_pass, _sp!.getString('vault_salt') ?? '').substring(0, 32);
+
+            String _encrypt(String txt) {
+              final key = enc.Key.fromUtf8(_key());
+              final iv = enc.IV.fromSecureRandom(16);
+              final e = enc.Encrypter(enc.AES(key, mode: enc.AESMode.cbc));
+              return '${iv.base64}:${e.encrypt(txt, iv: iv).base64}';
+            }
+
+            String _decrypt(String blob) {
+              final parts = blob.split(':');
+              if (parts.length != 2) return blob;
+              final key = enc.Key.fromUtf8(_key());
+              final e = enc.Encrypter(enc.AES(key, mode: enc.AESMode.cbc));
+              return e.decrypt64(parts[1], iv: enc.IV.fromBase64(parts[0]));
+            }
+          }
+          DART
+
+          cat > lib/import_engine.dart <<'DART'
+          import 'core.dart';
+          import 'models.dart';
+
+          final _sep = RegExp(r'[\s|,;:\t]+');
+
+          List<int>? _date(String t) {
+            final d = t.replaceAll(RegExp(r'\D'), '');
+            if (d.length == 4) {
+              final mm = int.parse(d.substring(0, 2));
+              final yy = int.parse(d.substring(2));
+              if (mm >= 1 && mm <= 12) return [mm, yy];
+              return null;
+            }
+            if (d.length == 6) {
+              final mm = int.parse(d.substring(0, 2));
+              final yy = int.parse(d.substring(4));
+              if (mm >= 1 && mm <= 12) return [mm, yy];
+              return null;
+            }
+            if (d.length == 3) {
+              final mm = int.parse(d.substring(0, 1));
+              final yy = int.parse(d.substring(1));
+              if (mm >= 1 && mm <= 9) return [mm, yy];
+              return null;
+            }
+            if (d.length == 5) {
+              final mm = int.parse(d.substring(0, 2));
+              final yy = int.parse(d.substring(3));
+              if (mm >= 1 && mm <= 12) return [mm, yy];
+            }
+            return null;
+          }
+
+          ImportResult parseCards(String input, {bool repairLuhn = true}) {
+            final out = <CreditCard>[];
+            final seen = <String>{};
+            var dup = 0;
+            var junk = 0;
+            var fixed = 0;
+            var exp = 0;
+
+            for (final rawLine in input.split(RegExp(r'[\r\n]+'))) {
+              final line = rawLine.trim();
+              if (line.isEmpty) continue;
+
+              final tok = line.split(_sep).where((s) => s.isNotEmpty).toList();
+              if (tok.isEmpty) {
+                junk++;
+                continue;
+              }
+
+              String? pan;
+              var panIdx = -1;
+              for (var i = 0; i < tok.length; i++) {
+                final d = tok[i].replaceAll(RegExp(r'\D'), '');
+                if (d.length >= 12 && d.length <= 19) {
+                  pan = d;
+                  panIdx = i;
+                  break;
+                }
+              }
+              if (pan == null) {
+                junk++;
+                continue;
+              }
+
+              var mm = 0;
+              var yy = 0;
+              var cvv = '';
+
+              for (var i = 0; i < tok.length; i++) {
+                if (i == panIdx) continue;
+                final t = tok[i];
+                final d = t.replaceAll(RegExp(r'\D'), '');
+                if (d.isEmpty) continue;
+
+                if (mm == 0) {
+                  final dt = _date(t);
+                  if (dt != null) {
+                    mm = dt[0];
+                    yy = dt[1];
+                    continue;
+                  }
+                }
+                if (cvv.isEmpty && (d.length == 3 || d.length == 4)) cvv = d;
+              }
+
+              if (mm == 0 || yy == 0) {
+                mm = 12;
+                yy = 29;
+              }
+
+              if (repairLuhn && !luhn(pan)) {
+                final f = fixLuhn(pan);
+                if (f != pan) {
+                  pan = f;
+                  fixed++;
+                }
+              }
+
+              if (seen.contains(pan)) {
+                dup++;
+                continue;
+              }
+              seen.add(pan);
+
+              final card = CreditCard(
+                id: newId(),
+                pan: pan,
+                expMonth: mm,
+                expYear: yy,
+                cvv: cvv,
+                brand: schemeOf(pan),
+                bin: pan.length >= 6 ? pan.substring(0, 6) : pan,
+              );
+              if (card.expired) exp++;
+              out.add(card);
+            }
+
+            return ImportResult(cards: out, duplicates: dup, junk: junk, fixed: fixed, expired: exp);
+          }
+          DART
+
+          cat > lib/checker.dart <<'DART'
+          import 'dart:convert';
+          import 'dart:io';
+          import 'dart:math';
+
+          import 'package:http/http.dart' as http;
+          import 'package:http/io_client.dart';
+
+          import 'core.dart';
+          import 'models.dart';
+          import 'net.dart';
+
+          class ProbeResult {
+            const ProbeResult({required this.ok, required this.ms});
+            final bool ok;
+            final int ms;
+          }
+
+          class CheckResult {
+            const CheckResult({required this.status, required this.message, this.gateway = '', this.latencyMs = 0});
+            final CheckStatus status;
+            final String message;
+            final String gateway;
+            final int latencyMs;
+          }
+
+          class CheckEngine {
+            CheckEngine(this.cfg, {List<ProxyNode>? proxies}) : _proxies = proxies ?? const [];
+
+            final Settings cfg;
+            final List<ProxyNode> _proxies;
+            final _rnd = Random();
+            final _clients = <String, http.Client>{};
+
+            http.Client _client(ProxyNode? p) {
+              final key = p == null ? 'direct' : '${p.kind.name}|${p.host}:${p.port}';
+
+              final cached = _clients[key];
+              if (cached != null) return cached;
+
+              final hc = HttpClient()
+                ..connectionTimeout = Duration(seconds: cfg.timeoutSec)
+                ..idleTimeout = const Duration(seconds: 20);
+
+              if (p != null) {
+                hc.findProxy = (_) =>
+                    p.kind == ProxyKind.socks5 ? 'SOCKS ${p.host}:${p.port}' : 'PROXY ${p.host}:${p.port}';
+
+                if (p.user.isNotEmpty) {
+                  final user = p.user;
+                  final pass = p.pass;
+                  hc.authenticateProxy = (host, port, scheme, realm) {
+                    hc.addProxyCredentials(host, port, realm, HttpClientBasicCredentials(user, pass));
+                    return true;
+                  };
+                  hc.authenticate = (uri, scheme, realm) {
+                    hc.addCredentials(uri, realm, HttpClientBasicCredentials(user, pass));
+                    return true;
+                  };
+                }
+              } else if (cfg.doh) {
+                hc.connectionFactory = _viaDoh;
+              }
+
+              final c = IOClient(hc);
+              _clients[key] = c;
+              return c;
+            }
+
+            Future<ConnectionTask<Socket>> _viaDoh(Uri uri, String? proxyHost, int? proxyPort) async {
+              final t = Duration(seconds: cfg.timeoutSec);
+
+              var target = uri.host;
+              if (InternetAddress.tryParse(target) == null) {
+                try {
+                  final ips = await NetSense.i.resolve(target);
+                  if (ips.isNotEmpty) target = ips.first;
+                } catch (_) {}
+              }
+
+              Socket raw;
+              try {
+                raw = await Socket.connect(target, uri.port, timeout: t);
+              } catch (_) {
+                if (target == uri.host) rethrow;
+                raw = await Socket.connect(uri.host, uri.port, timeout: t);
+              }
+
+              final Socket sock =
+                  uri.isScheme('https') ? await SecureSocket.secure(raw, host: uri.host) : raw;
+
+              return ConnectionTask.fromSocket(sock, Future<Socket>.value(sock));
+            }
+
+            void dispose() {
+              for (final c in _clients.values) {
+                c.close();
+              }
+              _clients.clear();
+            }
+
+            ProxyNode? _pick() {
+              if (!cfg.useProxies) return null;
+              final pool = _proxies.where((p) => p.health != ProxyHealth.down).toList();
+              if (pool.isEmpty) return null;
+              return pool[_rnd.nextInt(pool.length)];
+            }
+
+            String get _sk => cfg.stripeKey.isEmpty ? stripePk : cfg.stripeKey;
+
+            Future<ProbeResult> probe(ProxyNode? p) async {
+              final sw = Stopwatch()..start();
+              try {
+                final r = await _client(p).get(Uri.parse(cfg.probeUrl)).timeout(Duration(seconds: cfg.timeoutSec));
+                sw.stop();
+                return ProbeResult(ok: r.statusCode < 500, ms: sw.elapsedMilliseconds);
+              } catch (_) {
+                sw.stop();
+                return ProbeResult(ok: false, ms: sw.elapsedMilliseconds);
+              }
+            }
+
+            Future<String?> exitInfo(ProxyNode p) async {
+              try {
+                final r = await _client(p)
+                    .get(Uri.parse('https://api.ipify.org?format=json'))
+                    .timeout(Duration(seconds: cfg.timeoutSec));
+                if (r.statusCode != 200) return null;
+                return (jsonDecode(r.body) as Map<String, dynamic>)['ip'] as String?;
+              } catch (_) {
+                return null;
+              }
+            }
+
+            Future<CheckResult> check(CreditCard card) async {
+              final max = cfg.retries + 1;
+              var attempt = 0;
+
+              while (attempt < max) {
+                final p = _pick();
+                final r = cfg.engine == 'both'
+                    ? await _cascade(card, p)
+                    : cfg.engine == 'dorkill'
+                        ? await _dorkill(card, p)
+                        : await _stripe(card, p);
+
+                if (r.status != CheckStatus.unknown) return r;
+
+                attempt++;
+                if (attempt < max) await Future.delayed(Duration(milliseconds: NetSense.i.backoff(attempt)));
+              }
+
+              return const CheckResult(status: CheckStatus.unknown, message: 'sin respuesta', gateway: '');
+            }
+
+            Future<CheckResult> _stripe(CreditCard card, ProxyNode? p) async {
+              final sw = Stopwatch()..start();
+              try {
+                final r = await _client(p)
+                    .post(
+                      Uri.parse(stripeTokenUrl),
+                      headers: {
+                        'Authorization': 'Bearer $_sk',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                      },
+                      body: {
+                        'card[number]': card.pan,
+                        'card[exp_month]': card.expMonth.toString().padLeft(2, '0'),
+                        'card[exp_year]': card.expYear.toString().padLeft(2, '0'),
+                        'card[cvc]': card.cvv,
+                      },
+                    )
+                    .timeout(Duration(seconds: cfg.timeoutSec));
+                sw.stop();
+
+                final j = jsonDecode(r.body) as Map<String, dynamic>;
+
+                if (r.statusCode == 200 && j['id'] != null) {
+                  return CheckResult(status: CheckStatus.live, message: 'aprobada', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+                }
+
+                final err = (j['error'] as Map?) ?? const {};
+                final code = (err['code'] ?? '').toString();
+                final decline = (err['decline_code'] ?? '').toString();
+                final msg = (err['message'] ?? 'rechazada').toString();
+
+                if (code == 'card_declined') {
+                  return CheckResult(status: CheckStatus.dead, message: decline.isEmpty ? 'declinada' : decline, gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+                }
+                if (code == 'incorrect_number' || code == 'invalid_number') {
+                  return CheckResult(status: CheckStatus.dead, message: 'numero invalido', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+                }
+                if (code == 'expired_card') {
+                  return CheckResult(status: CheckStatus.dead, message: 'vencida', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+                }
+                if (code == 'incorrect_cvc') {
+                  return CheckResult(status: CheckStatus.dead, message: 'cvv incorrecto', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+                }
+                return CheckResult(status: CheckStatus.unknown, message: msg, gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+              } catch (_) {
+                sw.stop();
+                return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+              }
+            }
+
+            Future<CheckResult> _dorkill(CreditCard card, ProxyNode? p) async {
+              if (cfg.dorkillKey.isEmpty) {
+                return const CheckResult(status: CheckStatus.unknown, message: 'falta API key', gateway: 'dorkill');
+              }
+
+              final sw = Stopwatch()..start();
+              try {
+                final uri = Uri.parse(dorkillUrl).replace(queryParameters: {
+                  'card': '${card.pan}|${card.expLabel}|${card.cvv}',
+                  'key': cfg.dorkillKey,
+                });
+                final r = await _client(p).get(uri).timeout(Duration(seconds: cfg.timeoutSec));
+                sw.stop();
+
+                final text = r.body.toLowerCase();
+                if (text.contains('"live"') || text.contains('approved') || text.contains('"charged":true')) {
+                  return CheckResult(status: CheckStatus.live, message: 'aprobada', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
+                }
+                if (text.contains('declined') || text.contains('"status":"fail"') || text.contains('invalid')) {
+                  return CheckResult(status: CheckStatus.dead, message: 'declinada', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
+                }
+                return CheckResult(
+                  status: CheckStatus.unknown,
+                  message: text.length > 60 ? text.substring(0, 60) : text,
+                  gateway: 'dorkill',
+                  latencyMs: sw.elapsedMilliseconds,
+                );
+              } catch (_) {
+                sw.stop();
+                return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
+              }
+            }
+
+            Future<CheckResult> _cascade(CreditCard card, ProxyNode? p) async {
+              final a = await _stripe(card, p);
+              if (a.status == CheckStatus.live) return a;
+
+              final b = await _dorkill(card, p);
+              if (b.status == CheckStatus.live) return b;
+
+              if (a.status == CheckStatus.dead && b.status == CheckStatus.dead) {
+                return CheckResult(status: CheckStatus.dead, message: '${a.message} + ${b.message}', gateway: 'cascada', latencyMs: a.latencyMs + b.latencyMs);
+              }
+              if (a.status == CheckStatus.dead) return a;
+              if (b.status == CheckStatus.dead) return b;
+              return const CheckResult(status: CheckStatus.unknown, message: 'sin respuesta', gateway: 'cascada');
+            }
+          }
+          DART
+
+          cat > lib/bin_db.dart <<'DART'
+          import 'dart:convert';
+          import 'dart:io';
+
+          import 'package:http/http.dart' as http;
+          import 'package:path_provider/path_provider.dart';
+
+          import 'models.dart';
+
+          class BinDb {
+            BinDb._();
+            static final BinDb i = BinDb._();
+
+            static const _url = 'https://raw.githubusercontent.com/iann838/bin-list-data/master/bin-list-data.csv';
+
+            Map<String, BinInfo> _map = {};
+
+            int get count => _map.length;
+
+            Future<File> _file() async {
+              final dir = await getApplicationDocumentsDirectory();
+              return File('${dir.path}/bin_list.csv');
+            }
+
+            Future<File> _index() async {
+              final dir = await getApplicationDocumentsDirectory();
+              return File('${dir.path}/bin_index.json');
+            }
+
+            Future<bool> installed() async => (await _file()).exists();
+
+            Future<void> download({void Function(int received, int total)? onProgress}) async {
+              final f = await _file();
+              final client = http.Client();
+              try {
+                final res = await client.send(http.Request('GET', Uri.parse(_url)));
+                final total = res.contentLength ?? 0;
+                var received = 0;
+                final sink = f.openWrite();
+
+                await for (final part in res.stream) {
+                  sink.add(part);
+                  received += part.length;
+                  onProgress?.call(received, total);
+                }
+                await sink.flush();
+                await sink.close();
+              } finally {
+                client.close();
+              }
+            }
+
+            Future<int> buildIndex() async {
+              final f = await _file();
+              if (!await f.exists()) return 0;
+
+              final lines = await f.readAsLines();
+              final map = <String, BinInfo>{};
+
+              for (var i = 1; i < lines.length; i++) {
+                final line = lines[i];
+                if (line.isEmpty) continue;
+                final c = line.split(',');
+                if (c.length < 8) continue;
+                final bin = c[0].trim();
+                if (bin.length < 6) continue;
+                map[bin] = BinInfo(
+                  bank: c[4].trim(),
+                  country: c[5].trim(),
+                  cardType: c[7].trim(),
+                  level: c.length > 8 ? c[8].trim() : '',
+                );
+              }
+
+              _map = map;
+              final idx = await _index();
+              await idx.writeAsString(jsonEncode(map.map((k, v) => MapEntry(k, v.toJson()))), flush: true);
+              return map.length;
+            }
+
+            Future<void> loadIndex() async {
+              if (_map.isNotEmpty) return;
+              final idx = await _index();
+              if (!await idx.exists()) return;
+              try {
+                final j = jsonDecode(await idx.readAsString()) as Map<String, dynamic>;
+                _map = j.map((k, v) => MapEntry(k, BinInfo.fromJson((v as Map).cast<String, dynamic>())));
+              } catch (_) {
+                _map = {};
+              }
+            }
+
+            BinInfo? lookup(String pan) {
+              if (pan.length < 6) return null;
+              final exact = _map[pan.substring(0, 6)];
+              if (exact != null) return exact;
+              for (var len = 5; len >= 3; len--) {
+                final hit = _map[pan.substring(0, len)];
+                if (hit != null) return hit;
+              }
+              return null;
+            }
+
+            Future<void> drop() async {
+              _map = {};
+              for (final f in [await _file(), await _index()]) {
+                if (await f.exists()) await f.delete();
+              }
+            }
+          }
+          DART
+
+          cat > lib/queue.dart <<'DART'
+          import 'dart:async';
+          import 'dart:isolate';
+
+          import 'checker.dart';
+          import 'models.dart';
+
+          class MassRunner {
+            MassRunner({
+              required this.cards,
+              required this.settings,
+              required this.proxies,
+              required this.onResult,
+              required this.onProgress,
+            });
+
+            final List<CreditCard> cards;
+            final Settings settings;
+            final List<ProxyNode> proxies;
+            final void Function(String id, CheckResult r) onResult;
+            final void Function(int done, int total, int live, int dead, int errors) onProgress;
+
+            final ReceivePort _inbox = ReceivePort();
+            final List<_W> _workers = [];
+            final List<SendPort> _idle = [];
+
+            int _cursor = 0;
+            int _active = 0;
+            int _done = 0;
+            int _live = 0;
+            int _dead = 0;
+            int _errors = 0;
+            int _retire = 0;
+
+            bool _paused = false;
+            bool _stopped = false;
+            Completer<void>? _finished;
+
+            bool get paused => _paused;
+            int get done => _done;
+            int get total => cards.length;
+            int get live => _live;
+            int get dead => _dead;
+            int get errors => _errors;
+
+            Future<void> start({int concurrency = 6}) async {
+              _finished = Completer<void>();
+              _inbox.listen(_onMessage);
+
+              final n = concurrency.clamp(1, 16).toInt();
+              for (var i = 0; i < n; i++) {
+                await _spawn();
+              }
+
+              await _finished!.future;
+              await Future.delayed(const Duration(milliseconds: 80));
+              _inbox.close();
+            }
+
+            Future<void> _spawn() async {
+              final iso = await Isolate.spawn<List<dynamic>>(
+                _workerMain,
+                <dynamic>[_inbox.sendPort, settings.toJson(), proxies.map((p) => p.toJson()).toList()],
+              );
+              _workers.add(_W(iso));
+            }
+
+            void _onMessage(dynamic raw) {
+              final m = (raw as Map).cast<String, dynamic>();
+              final t = m['t'] as String;
+
+              if (t == 'ready') {
+                final p = m['port'] as SendPort;
+                for (final w in _workers) {
+                  if (w.port == null) {
+                    w.port = p;
+                    break;
+                  }
+                }
+                _idle.add(p);
+                _pump();
+                return;
+              }
+
+              if (t == 'next') {
+                _idle.add(m['port'] as SendPort);
+                _pump();
+                return;
+              }
+
+              if (t == 'result') {
+                _active--;
+                _done++;
+
+                final st = m['status'] as String;
+                if (st == 'live') _live++;
+                if (st == 'dead') _dead++;
+                if (st == 'unknown') _errors++;
+
+                onResult(
+                  m['id'] as String,
+                  CheckResult(
+                    status: CheckStatus.values.firstWhere((s) => s.name == st, orElse: () => CheckStatus.unknown),
+                    message: (m['msg'] ?? '').toString(),
+                    gateway: (m['gw'] ?? '').toString(),
+                    latencyMs: ((m['ms'] ?? 0) as num).toInt(),
+                  ),
+                );
+
+                onProgress(_done, cards.length, _live, _dead, _errors);
+                _maybeFinish();
+              }
+            }
+
+            void _pump() {
+              while (_idle.isNotEmpty) {
+                if (_stopped) {
+                  _idle.removeAt(0).send(<String, dynamic>{'t': 'end'});
+                  continue;
+                }
+                if (_paused) return;
+
+                if (_retire > 0 && _workers.length > 1) {
+                  _retire--;
+                  final p = _idle.removeAt(0);
+                  p.send(<String, dynamic>{'t': 'end'});
+                  _workers.removeWhere((w) => w.port == p);
+                  continue;
+                }
+
+                if (_cursor >= cards.length) {
+                  _idle.removeAt(0).send(<String, dynamic>{'t': 'end'});
+                  continue;
+                }
+
+                final card = cards[_cursor++];
+                _active++;
+                _idle.removeAt(0).send(<String, dynamic>{'t': 'job', 'card': card.toJson()});
+              }
+
+              _maybeFinish();
+            }
+
+            void _maybeFinish() {
+              if (_stopped) return;
+              if (_done < cards.length) return;
+
+              final f = _finished;
+              if (f == null || f.isCompleted) return;
+
+              for (final w in _workers) {
+                w.port?.send(<String, dynamic>{'t': 'end'});
+              }
+              f.complete();
+            }
+
+            void pause() => _paused = true;
+
+            void resume() {
+              if (_stopped) return;
+              _paused = false;
+              _pump();
+            }
+
+            void stop() {
+              _stopped = true;
+              _paused = false;
+
+              for (final w in _workers) {
+                w.port?.send(<String, dynamic>{'t': 'end'});
+              }
+              for (final w in _workers) {
+                w.isolate.kill(priority: Isolate.immediate);
+              }
+
+              _workers.clear();
+              _idle.clear();
+
+              final f = _finished;
+              if (f != null && !f.isCompleted) f.complete();
+            }
+
+            Future<void> setConcurrency(int n) async {
+              final target = n.clamp(1, 16).toInt();
+              if (_stopped) return;
+
+              if (target > _workers.length) {
+                _retire = 0;
+                for (var i = _workers.length; i < target; i++) {
+                  await _spawn();
+                }
+              } else if (target < _workers.length) {
+                _retire = _workers.length - target;
+                _pump();
+              }
+            }
+          }
+
+          class _W {
+            _W(this.isolate);
+            final Isolate isolate;
+            SendPort? port;
+          }
+
+          Future<void> _workerMain(List<dynamic> args) async {
+            final toMain = args[0] as SendPort;
+            final cfg = (args[1] as Map).cast<String, dynamic>();
+            final px = args[2] as List<dynamic>;
+
+            final settings = Settings.fromJson(cfg);
+            final proxies = px.map((e) => ProxyNode.fromJson((e as Map).cast<String, dynamic>())).toList();
+            final engine = CheckEngine(settings, proxies: proxies);
+
+            final inbox = ReceivePort();
+            toMain.send(<String, dynamic>{'t': 'ready', 'port': inbox.sendPort});
+
+            inbox.listen((dynamic msg) async {
+              final m = (msg as Map).cast<String, dynamic>();
+              final t = m['t'] as String;
+
+              if (t == 'job') {
+                final card = CreditCard.fromJson((m['card'] as Map).cast<String, dynamic>());
+
+                CheckResult r;
+                try {
+                  r = await engine.check(card);
+                } catch (_) {
+                  r = const CheckResult(status: CheckStatus.unknown, message: 'error interno');
+                }
+
+                toMain.send(<String, dynamic>{
+                  't': 'result',
+                  'id': card.id,
+                  'status': r.status.name,
+                  'msg': r.message,
+                  'gw': r.gateway,
+                  'ms': r.latencyMs,
+                });
+                toMain.send(<String, dynamic>{'t': 'next'});
+              } else if (t == 'end') {
+                engine.dispose();
+                inbox.close();
+                Isolate.exit();
+              }
+            });
+          }
+          DART
+
+          cat > lib/providers.dart <<'DART'
+          import 'dart:async';
+          import 'dart:math';
+
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import 'bin_db.dart';
+          import 'checker.dart';
+          import 'models.dart';
+          import 'net.dart';
+          import 'queue.dart';
+          import 'repos.dart';
+
+          final settingsProvider = StateNotifierProvider<SettingsNotifier, Settings>((ref) => SettingsNotifier());
+
+          class SettingsNotifier extends StateNotifier<Settings> {
+            SettingsNotifier() : super(const Settings()) {
+              final raw = Vault.i.data['settings'];
+              if (raw is Map) state = Settings.fromJson(raw.cast<String, dynamic>());
+            }
+
+            Future<void> _save() async {
+              Vault.i.data['settings'] = state.toJson();
+              await Vault.i.save();
+            }
+
+            void setEngine(String v) { state = state.copyWith(engine: v); _save(); }
+            void setStripeKey(String v) { state = state.copyWith(stripeKey: v); _save(); }
+            void setDorkillKey(String v) { state = state.copyWith(dorkillKey: v); _save(); }
+            void setRetries(int v) { state = state.copyWith(retries: v); _save(); }
+            void setUseProxies(bool v) { state = state.copyWith(useProxies: v); _save(); }
+            void setAutoTune(bool v) { state = state.copyWith(autoTune: v); _save(); }
+            void setDoh(bool v) { state = state.copyWith(doh: v); _save(); }
+            void setProxySticky(bool v) { state = state.copyWith(proxySticky: v); _save(); }
+            void setWifiOnly(bool v) { state = state.copyWith(wifiOnly: v); _save(); }
+            void setConcurrency(int v) { state = state.copyWith(concurrency: v); _save(); }
+            void setTimeoutSec(int v) { state = state.copyWith(timeoutSec: v); _save(); }
+            void setProbeUrl(String v) { state = state.copyWith(probeUrl: v); _save(); }
+            void setBiometrics(bool v) { state = state.copyWith(biometrics: v); _save(); }
+            void setAutoLock(int v) { state = state.copyWith(autoLockMin: v); _save(); }
+            Future<void> setOfflineDb(bool v) async { state = state.copyWith(offlineDb: v); await _save(); }
+          }
+
+          final cardsProvider = StateNotifierProvider<CardsNotifier, List<CreditCard>>((ref) => CardsNotifier());
+
+          class CardsNotifier extends StateNotifier<List<CreditCard>> {
+            CardsNotifier() : super(const []) {
+              final raw = Vault.i.data['cards'];
+              if (raw is List) {
+                state = raw.map((e) => CreditCard.fromJson((e as Map).cast<String, dynamic>())).toList();
+              }
+            }
+
+            Future<void> persist() async {
+              Vault.i.data['cards'] = state.map((c) => c.toJson()).toList();
+              await Vault.i.save();
+            }
+
+            Future<void> addAll(List<CreditCard> list) async {
+              state = [...list, ...state];
+              await persist();
+            }
+
+            Future<void> replaceAll(List<CreditCard> list) async {
+              state = list;
+              await persist();
+            }
+
+            Future<void> clear() async {
+              state = const [];
+              await persist();
+            }
+
+            Future<void> remove(String id) async {
+              state = state.where((c) => c.id != id).toList();
+              await persist();
+            }
+
+            Future<void> removeMany(Set<String> ids) async {
+              if (ids.isEmpty) return;
+              state = state.where((c) => !ids.contains(c.id)).toList();
+              await persist();
+            }
+
+            Future<void> update(CreditCard card) async {
+              state = state.map((c) => c.id == card.id ? card : c).toList();
+              await persist();
+            }
+
+            void markChecking(List<String> ids) {
+              final set = ids.toSet();
+              state = state.map((c) => set.contains(c.id) ? c.copyWith(status: CheckStatus.checking) : c).toList();
+            }
+
+            void applyBatch(Map<String, CheckResult> rs) {
+              if (rs.isEmpty) return;
+              final now = DateTime.now();
+              state = state.map((c) {
+                final r = rs[c.id];
+                if (r == null) return c;
+                return c.copyWith(
+                  status: r.status,
+                  message: r.message,
+                  gateway: r.gateway,
+                  latencyMs: r.latencyMs,
+                  checkedAt: now,
+                );
+              }).toList();
+            }
+          }
+
+          final proxiesProvider = StateNotifierProvider<ProxiesNotifier, List<ProxyNode>>((ref) => ProxiesNotifier());
+
+          class ProxiesNotifier extends StateNotifier<List<ProxyNode>> {
+            ProxiesNotifier() : super(const []) {
+              final raw = Vault.i.data['proxies'];
+              if (raw is List) {
+                state = raw.map((e) => ProxyNode.fromJson((e as Map).cast<String, dynamic>())).toList();
+              }
+            }
+
+            Future<void> persist() async {
+              Vault.i.data['proxies'] = state.map((p) => p.toJson()).toList();
+              await Vault.i.save();
+            }
+
+            Future<void> upsert(ProxyNode p) async {
+              state = [...state.where((x) => x.id != p.id), p];
+              await persist();
+            }
+
+            Future<void> remove(String id) async {
+              state = state.where((p) => p.id != id).toList();
+              await persist();
+            }
+
+            Future<void> setHealth(String id, ProxyHealth h, int ms) async {
+              state = state.map((p) {
+                if (p.id != id) return p;
+                p.health = h;
+                p.latencyMs = ms;
+                return p;
+              }).toList();
+              await persist();
+            }
+          }
+
+          final netProvider = StateNotifierProvider<NetNotifier, NetSense>((ref) {
+            final n = NetNotifier();
+            n.start();
+            ref.onDispose(n.stop);
+            return n;
+          });
+
+          class NetNotifier extends StateNotifier<NetSense> {
+            NetNotifier() : super(NetSense.i);
+            StreamSubscription<void>? _s;
+
+            @override
+            bool updateShouldNotify(NetSense old, NetSense current) => true;
+
+            void start() {
+              NetSense.i.start();
+              _s = NetSense.i.changes.listen((_) {
+                if (mounted) state = NetSense.i;
+              });
+              unawaited(NetSense.i.ping());
+            }
+
+            void stop() {
+              _s?.cancel();
+              _s = null;
+              NetSense.i.stop();
+            }
+          }
+
+          final lockProvider = StateProvider<bool>((ref) => true);
+          final setupProvider = StateProvider<bool>((ref) => Vault.i.setupDone);
+          final tabProvider = StateProvider<int>((ref) => 0);
+          final binStatusProvider = StateProvider<BinStatus>((ref) => const BinStatus());
+
+          class RunStats {
+            const RunStats({
+              this.total = 0,
+              this.done = 0,
+              this.live = 0,
+              this.dead = 0,
+              this.errors = 0,
+              this.paused = false,
+              this.startedAt,
+            });
+
+            final int total;
+            final int done;
+            final int live;
+            final int dead;
+            final int errors;
+            final bool paused;
+            final DateTime? startedAt;
+
+            double get pct => total == 0 ? 0 : done / total;
+            double get hitRate => done == 0 ? 0 : live / done;
+          }
+
+          final statsProvider = StateNotifierProvider<StatsNotifier, RunStats>((ref) => StatsNotifier());
+
+          class StatsNotifier extends StateNotifier<RunStats> {
+            StatsNotifier() : super(const RunStats());
+
+            void reset(int total) => state = RunStats(total: total, startedAt: DateTime.now());
+
+            void clear() => state = const RunStats();
+
+            void progress({
+              required int done,
+              required int total,
+              required int live,
+              required int dead,
+              required int errors,
+            }) =>
+                state = RunStats(
+                  total: total,
+                  done: done,
+                  live: live,
+                  dead: dead,
+                  errors: errors,
+                  paused: state.paused,
+                  startedAt: state.startedAt,
+                );
+
+            void setPaused(bool v) => state = RunStats(
+                  total: state.total,
+                  done: state.done,
+                  live: state.live,
+                  dead: state.dead,
+                  errors: state.errors,
+                  paused: v,
+                  startedAt: state.startedAt,
+                );
+          }
+
+          final runProvider = StateNotifierProvider<RunController, bool>((ref) => RunController(ref));
+
+          class RunController extends StateNotifier<bool> {
+            RunController(this.ref) : super(false);
+
+            final Ref ref;
+            MassRunner? _runner;
+            StreamSubscription<void>? _netSub;
+            bool _autoPaused = false;
+
+            Future<void> run({List<String>? ids, bool onlyPending = false}) async {
+              if (state) return;
+              state = true;
+
+              final settings = ref.read(settingsProvider);
+              var proxies = ref.read(proxiesProvider);
+              final all = ref.read(cardsProvider);
+
+              var targets =
+                  ids == null ? List<CreditCard>.from(all) : all.where((c) => ids.contains(c.id)).toList();
+              if (onlyPending) {
+                targets = targets.where((c) => c.status != CheckStatus.live).toList();
+              }
+
+              if (targets.isEmpty) {
+                state = false;
+                return;
+              }
+
+              if (settings.proxySticky && settings.useProxies) {
+                final pool = proxies.where((p) => p.health != ProxyHealth.down).toList();
+                if (pool.isNotEmpty) proxies = [pool[Random().nextInt(pool.length)]];
+              }
+
+              await BinDb.i.loadIndex();
+
+              final stats = ref.read(statsProvider.notifier);
+              final cards = ref.read(cardsProvider.notifier);
+
+              stats.reset(targets.length);
+              cards.markChecking(targets.map((c) => c.id).toList());
+
+              final buffer = <String, CheckResult>{};
+              final flush = Timer.periodic(const Duration(milliseconds: 160), (_) {
+                if (buffer.isEmpty) return;
+                cards.applyBatch(Map<String, CheckResult>.of(buffer));
+                buffer.clear();
+              });
+
+              final conc = (settings.autoTune ? NetSense.i.concurrency : settings.concurrency).clamp(1, 16).toInt();
+
+              final runner = MassRunner(
+                cards: targets,
+                settings: settings,
+                proxies: proxies,
+                onResult: (id, r) => buffer[id] = r,
+                onProgress: (done, total, live, dead, errors) =>
+                    stats.progress(done: done, total: total, live: live, dead: dead, errors: errors),
+              );
+              _runner = runner;
+
+              _netSub = NetSense.i.changes.listen((_) {
+                final r = _runner;
+                if (r == null) return;
+
+                if (!NetSense.i.online && !r.paused) {
+                  _autoPaused = true;
+                  r.pause();
+                  stats.setPaused(true);
+                } else if (NetSense.i.online && _autoPaused) {
+                  _autoPaused = false;
+                  r.resume();
+                  stats.setPaused(false);
+                }
+
+                if (settings.autoTune && NetSense.i.online) {
+                  r.setConcurrency(NetSense.i.concurrency);
+                }
+              });
+
+              try {
+                await runner.start(concurrency: conc);
+              } finally {
+                flush.cancel();
+
+                if (buffer.isNotEmpty) {
+                  cards.applyBatch(Map<String, CheckResult>.of(buffer));
+                  buffer.clear();
+                }
+
+                await _netSub?.cancel();
+                _netSub = null;
+                _runner = null;
+                stats.setPaused(false);
+                await cards.persist();
+                state = false;
+              }
+            }
+
+            void pause() {
+              _runner?.pause();
+              ref.read(statsProvider.notifier).setPaused(true);
+            }
+
+            void resume() {
+              _autoPaused = false;
+              _runner?.resume();
+              ref.read(statsProvider.notifier).setPaused(false);
+            }
+
+            void stop() => _runner?.stop();
+
+            Future<void> setConcurrency(int n) async => _runner?.setConcurrency(n);
+          }
+          DART
+
+          cat > lib/run_bar.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import 'core.dart';
+          import 'models.dart';
+          import 'providers.dart';
+          import 'theme.dart';
+          import 'widgets.dart';
+
+          class RunBar extends ConsumerWidget {
+            const RunBar({super.key});
+
+            @override
+            Widget build(BuildContext context, WidgetRef ref) {
+              final running = ref.watch(runProvider);
+              final stats = ref.watch(statsProvider);
+
+              if (!running && stats.total == 0) return const SizedBox.shrink();
+
+              final settings = ref.watch(settingsProvider);
+              final pct = stats.total == 0 ? 0.0 : stats.done / stats.total;
+
+              var rate = 0.0;
+              var eta = 0;
+              final started = stats.startedAt;
+              if (started != null) {
+                final secs = DateTime.now().difference(started).inSeconds;
+                if (secs > 0) {
+                  rate = stats.done / secs;
+                  if (rate > 0) eta = ((stats.total - stats.done) / rate).round();
+                }
+              }
+
+              return Container(
+                margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.glass.withOpacity(0.65),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: stats.paused ? AppColors.amber.withOpacity(0.6) : AppColors.glassStroke,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          stats.paused ? Icons.pause_circle_outline : Icons.bolt,
+                          size: 16,
+                          color: stats.paused ? AppColors.amber : AppColors.lime,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            stats.paused
+                                ? 'en pausa · ${fmtInt(stats.done)}/${fmtInt(stats.total)}'
+                                : 'procesando ${fmtInt(stats.done)}/${fmtInt(stats.total)}',
+                            style: AppTextStyles.body,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (running)
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            icon: Icon(
+                              stats.paused ? Icons.play_arrow : Icons.pause,
+                              size: 18,
+                              color: stats.paused ? AppColors.lime : AppColors.amber,
+                            ),
+                            onPressed: () {
+                              final r = ref.read(runProvider.notifier);
+                              if (stats.paused) {
+                                r.resume();
+                              } else {
+                                r.pause();
+                              }
+                            },
+                          ),
+                        if (running)
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.stop_circle_outlined, size: 18, color: AppColors.red),
+                            onPressed: () => ref.read(runProvider.notifier).stop(),
+                          ),
+                        if (!running)
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.close, size: 16, color: AppColors.textLo),
+                            onPressed: () => ref.read(statsProvider.notifier).clear(),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    SegmentedProgress(value: pct, color: stats.paused ? AppColors.amber : AppColors.lime),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        _metric('vivas', fmtInt(stats.live), AppColors.lime),
+                        _metric('muertas', fmtInt(stats.dead), AppColors.red),
+                        _metric('error', fmtInt(stats.errors), AppColors.grey),
+                        _metric('tasa', fmtPct(stats.hitRate), AppColors.cyan),
+                        _metric('vel', '${rate.toStringAsFixed(1)}/s', AppColors.violet),
+                        _metric('eta', eta == 0 ? '--' : fmtSecs(eta), AppColors.textMid),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    if (settings.autoTune)
+                      Text('concurrencia automatica segun la red', style: AppTextStyles.tiny)
+                    else
+                      Row(
+                        children: [
+                          Text('concurrencia ${settings.concurrency}', style: AppTextStyles.tiny),
+                          Expanded(
+                            child: Slider(
+                              value: settings.concurrency.toDouble(),
+                              min: 1,
+                              max: 16,
+                              divisions: 15,
+                              onChanged: (v) {
+                                ref.read(settingsProvider.notifier).setConcurrency(v.round());
+                                ref.read(runProvider.notifier).setConcurrency(v.round());
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: NeonButton(
+                            label: 'Copiar vivas',
+                            icon: Icons.copy_all,
+                            onPressed: () async {
+                              final txt = ref
+                                  .read(cardsProvider)
+                                  .where((c) => c.status == CheckStatus.live)
+                                  .map((c) => c.line)
+                                  .join('\n');
+                              if (txt.isEmpty) return;
+                              await Clipboard.setData(ClipboardData(text: txt));
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context)
+                                    .showSnackBar(const SnackBar(content: Text('Vivas copiadas')));
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: NeonButton(
+                            label: 'Revisar pendientes',
+                            icon: Icons.refresh,
+                            color: AppColors.cyan,
+                            onPressed:
+                                running ? null : () => ref.read(runProvider.notifier).run(onlyPending: true),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Widget _metric(String label, String value, Color color) => Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: color)),
+                      Text(label, style: AppTextStyles.tiny),
+                    ],
+                  ),
+                );
+          }
+          DART
+
+          cat > lib/main.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import 'core.dart';
+          import 'providers.dart';
+          import 'repos.dart';
+          import 'screens/lock.dart';
+          import 'screens/setup.dart';
+          import 'screens/shell.dart';
+          import 'theme.dart';
+
+          Future<void> main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+            await Vault.i.boot();
+            runApp(const ProviderScope(child: CChekerApp()));
+          }
+
+          class CChekerApp extends ConsumerWidget {
+            const CChekerApp({super.key});
+
+            @override
+            Widget build(BuildContext context, WidgetRef ref) {
+              final ready = ref.watch(setupProvider);
+              final locked = ref.watch(lockProvider);
+
+              return MaterialApp(
+                title: appName,
+                debugShowCheckedModeBanner: false,
+                theme: buildTheme(),
+                home: !ready
+                    ? const SetupScreen()
+                    : locked
+                        ? const LockScreen()
+                        : const ShellScreen(),
+              );
+            }
+          }
+          DART
+
+          cat > lib/screens/setup.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+          import 'package:local_auth/local_auth.dart';
+
+          import '../core.dart';
+          import '../logo.dart';
+          import '../providers.dart';
+          import '../repos.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class SetupScreen extends ConsumerStatefulWidget {
+            const SetupScreen({super.key});
+            @override
+            ConsumerState<SetupScreen> createState() => _SetupScreenState();
+          }
+
+          class _SetupScreenState extends ConsumerState<SetupScreen> {
+            final _pin = TextEditingController();
+            final _pin2 = TextEditingController();
+            bool _bio = true;
+            bool _hasBio = false;
+            String _err = '';
+
+            @override
+            void initState() {
+              super.initState();
+              _check();
+            }
+
+            Future<void> _check() async {
+              try {
+                final ok = await LocalAuthentication().canCheckBiometrics;
+                if (mounted) setState(() => _hasBio = ok);
+              } catch (_) {}
+            }
+
+            @override
+            void dispose() {
+              _pin.dispose();
+              _pin2.dispose();
+              super.dispose();
+            }
+
+            Future<void> _finish({required bool withPin}) async {
+              if (withPin) {
+                if (_pin.text.length < 4) {
+                  setState(() => _err = 'Minimo 4 digitos');
+                  return;
+                }
+                if (_pin.text != _pin2.text) {
+                  setState(() => _err = 'No coinciden');
+                  return;
+                }
+                await Vault.i.setPassword(_pin.text);
+              } else {
+                await Vault.i.setPassword('');
+              }
+
+              ref.read(settingsProvider.notifier).setBiometrics(withPin && _bio && _hasBio);
+              if (withPin && _bio && _hasBio) await Vault.i.rememberPass();
+
+              await Vault.i.markSetup();
+              ref.read(setupProvider.notifier).state = true;
+              ref.read(lockProvider.notifier).state = false;
+            }
+
+            @override
+            Widget build(BuildContext context) => Scaffold(
+                  body: Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(26),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const LogoMark(size: 84),
+                          const SizedBox(height: 18),
+                          const Text(appName, style: AppTextStyles.h1),
+                          const SizedBox(height: 6),
+                          Text('version $appVersion · $appTag', style: AppTextStyles.caption),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Crea un PIN para cifrar tu boveda y exigirlo al abrir la app.',
+                            textAlign: TextAlign.center,
+                            style: AppTextStyles.caption,
+                          ),
+                          const SizedBox(height: 24),
+                          TextField(
+                            controller: _pin,
+                            obscureText: true,
+                            keyboardType: TextInputType.number,
+                            style: AppTextStyles.mono,
+                            decoration: const InputDecoration(labelText: 'PIN', labelStyle: AppTextStyles.caption),
+                          ),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: _pin2,
+                            obscureText: true,
+                            keyboardType: TextInputType.number,
+                            style: AppTextStyles.mono,
+                            decoration: const InputDecoration(labelText: 'Repetir PIN', labelStyle: AppTextStyles.caption),
+                          ),
+                          if (_err.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(_err, style: const TextStyle(color: AppColors.red, fontSize: 12)),
+                          ],
+                          if (_hasBio)
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('Desbloquear con huella', style: AppTextStyles.body),
+                              value: _bio,
+                              activeColor: AppColors.lime,
+                              onChanged: (v) => setState(() => _bio = v),
+                            ),
+                          const SizedBox(height: 14),
+                          NeonButton(
+                            label: 'Crear y entrar',
+                            icon: Icons.shield_outlined,
+                            expand: true,
+                            onPressed: () => _finish(withPin: true),
+                          ),
+                          const SizedBox(height: 10),
+                          TextButton(
+                            onPressed: () => _finish(withPin: false),
+                            child: const Text('Entrar sin PIN', style: AppTextStyles.caption),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+          }
+          DART
+
+          cat > lib/screens/lock.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+          import 'package:local_auth/local_auth.dart';
+
+          import '../core.dart';
+          import '../logo.dart';
+          import '../providers.dart';
+          import '../repos.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class LockScreen extends ConsumerStatefulWidget {
+            const LockScreen({super.key});
+            @override
+            ConsumerState<LockScreen> createState() => _LockScreenState();
+          }
+
+          class _LockScreenState extends ConsumerState<LockScreen> {
+            final _ctrl = TextEditingController();
+            String _err = '';
+
+            @override
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addPostFrameCallback((_) async {
+                if (!Vault.i.hasPassword) {
+                  await Vault.i.unlock('');
+                  if (mounted) ref.read(lockProvider.notifier).state = false;
+                  return;
+                }
+                await _tryBio();
+              });
+            }
+
+            @override
+            void dispose() {
+              _ctrl.dispose();
+              super.dispose();
+            }
+
+            Future<void> _tryBio() async {
+              if (!ref.read(settingsProvider).biometrics) return;
+
+              final pass = Vault.i.storedPass;
+              if (pass == null) return;
+
+              try {
+                final ok = await LocalAuthentication().authenticate(
+                  localizedReason: 'Desbloquea $appName',
+                  options: const AuthenticationOptions(stickyAuth: true),
+                );
+                if (!ok) return;
+                await Vault.i.unlock(pass);
+                if (mounted) ref.read(lockProvider.notifier).state = false;
+              } catch (_) {}
+            }
+
+            Future<void> _submit() async {
+              final ok = await Vault.i.unlock(_ctrl.text);
+              if (!ok) {
+                setState(() => _err = 'PIN incorrecto');
+                return;
+              }
+              ref.read(lockProvider.notifier).state = false;
+            }
+
+            @override
+            Widget build(BuildContext context) => Scaffold(
+                  body: Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(28),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const LogoMark(size: 76),
+                          const SizedBox(height: 20),
+                          const Text(appName, style: AppTextStyles.h1),
+                          const SizedBox(height: 6),
+                          Text('boveda cifrada · $appTag', style: AppTextStyles.caption),
+                          const SizedBox(height: 30),
+                          TextField(
+                            controller: _ctrl,
+                            obscureText: true,
+                            autofocus: true,
+                            keyboardType: TextInputType.number,
+                            textInputAction: TextInputAction.go,
+                            onSubmitted: (_) => _submit(),
+                            style: AppTextStyles.mono,
+                            decoration: const InputDecoration(labelText: 'PIN', labelStyle: AppTextStyles.caption),
+                          ),
+                          if (_err.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(_err, style: const TextStyle(color: AppColors.red, fontSize: 12)),
+                          ],
+                          const SizedBox(height: 18),
+                          NeonButton(label: 'Desbloquear', icon: Icons.lock_open, expand: true, onPressed: _submit),
+                          const SizedBox(height: 10),
+                          TextButton(
+                            onPressed: _tryBio,
+                            child: const Text('Usar huella', style: AppTextStyles.caption),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+          }
+          DART
+
+          cat > lib/screens/shell.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import '../logo.dart';
+          import '../net.dart';
+          import '../providers.dart';
+          import '../repos.dart';
+          import '../theme.dart';
+          import 'analysis.dart';
+          import 'import.dart';
+          import 'proxies.dart';
+          import 'settings.dart';
+          import 'vault.dart';
+
+          class ShellScreen extends ConsumerStatefulWidget {
+            const ShellScreen({super.key});
+            @override
+            ConsumerState<ShellScreen> createState() => _ShellScreenState();
+          }
+
+          class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingObserver {
+            DateTime? _background;
+
+            static const _tabs = [
+              (Icons.inventory_2_outlined, 'Boveda'),
+              (Icons.upload_file, 'Importar'),
+              (Icons.insights, 'Analisis'),
+              (Icons.lan_outlined, 'Proxies'),
+              (Icons.settings, 'Ajustes'),
+            ];
+
+            @override
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addObserver(this);
+            }
+
+            @override
+            void dispose() {
+              WidgetsBinding.instance.removeObserver(this);
+              super.dispose();
+            }
+
+            @override
+            void didChangeAppLifecycleState(AppLifecycleState state) {
+              final mins = ref.read(settingsProvider).autoLockMin;
+
+              if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+                _background = DateTime.now();
+              } else if (state == AppLifecycleState.resumed) {
+                final b = _background;
+                if (b != null && mins > 0 && DateTime.now().difference(b).inMinutes >= mins) {
+                  Vault.i.lock();
+                  ref.read(lockProvider.notifier).state = true;
+                }
+                _background = null;
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final net = ref.watch(netProvider);
+              final running = ref.watch(runProvider);
+              final tab = ref.watch(tabProvider);
+
+              return Scaffold(
+                appBar: AppBar(
+                  title: Row(
+                    children: [
+                      const LogoMark(size: 26),
+                      const SizedBox(width: 9),
+                      const Text('CCheker Live', style: AppTextStyles.h2),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: net.online ? AppColors.lime.withOpacity(0.15) : AppColors.red.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          net.online ? '${net.latencyMs}ms' : 'offline',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: net.online ? AppColors.lime : AppColors.red,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  actions: [
+                    if (running)
+                      const Padding(
+                        padding: EdgeInsets.only(right: 10),
+                        child: Center(
+                          child: SizedBox(
+                            width: 15,
+                            height: 15,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.lime),
+                          ),
+                        ),
+                      ),
+                    IconButton(
+                      icon: Icon(
+                        running ? Icons.stop_circle_outlined : Icons.play_circle_outline,
+                        color: running ? AppColors.red : AppColors.lime,
+                      ),
+                      onPressed: () {
+                        final r = ref.read(runProvider.notifier);
+                        if (running) {
+                          r.stop();
+                        } else {
+                          r.run();
+                        }
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.lock_outline),
+                      onPressed: () {
+                        Vault.i.lock();
+                        ref.read(lockProvider.notifier).state = true;
+                      },
+                    ),
+                  ],
+                ),
+                body: IndexedStack(
+                  index: tab,
+                  children: const [
+                    VaultScreen(),
+                    ImportScreen(),
+                    AnalysisScreen(),
+                    ProxiesScreen(),
+                    SettingsScreen(),
+                  ],
+                ),
+                bottomNavigationBar: NavigationBar(
+                  selectedIndex: tab,
+                  onDestinationSelected: (i) => ref.read(tabProvider.notifier).state = i,
+                  backgroundColor: AppColors.bgElevated,
+                  indicatorColor: AppColors.lime.withOpacity(0.15),
+                  labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
+                  destinations: _tabs
+                      .map((t) => NavigationDestination(icon: Icon(t.$1, size: 20), label: t.$2))
+                      .toList(),
+                ),
+              );
+            }
+          }
+          DART
+
+          cat > lib/screens/vault.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import '../bin_db.dart';
+          import '../core.dart';
+          import '../models.dart';
+          import '../providers.dart';
+          import '../run_bar.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class VaultScreen extends ConsumerStatefulWidget {
+            const VaultScreen({super.key});
+            @override
+            ConsumerState<VaultScreen> createState() => _VaultScreenState();
+          }
+
+          class _VaultScreenState extends ConsumerState<VaultScreen> {
+            final _sel = <String>{};
+            final _q = TextEditingController();
+            bool _selecting = false;
+            CheckStatus? _filter;
+
+            @override
+            void dispose() {
+              _q.dispose();
+              super.dispose();
+            }
+
+            void _snack(String m) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+            }
+
+            Future<void> _copySelected() async {
+              final all = ref.read(cardsProvider);
+              final txt = all.where((c) => _sel.contains(c.id)).map((c) => c.line).join('\n');
+              await Clipboard.setData(ClipboardData(text: txt));
+              _snack('${_sel.length} lineas copiadas');
+            }
+
+            Future<void> _deleteSelected() async {
+              final n = _sel.length;
+              await ref.read(cardsProvider.notifier).removeMany(Set<String>.of(_sel));
+              setState(() {
+                _sel.clear();
+                _selecting = false;
+              });
+              _snack('$n borradas');
+            }
+
+            Future<void> _enrichSelected() async {
+              await BinDb.i.loadIndex();
+
+              final all = ref.read(cardsProvider);
+              final notifier = ref.read(cardsProvider.notifier);
+
+              final out = <CreditCard>[];
+              var hits = 0;
+
+              for (final c in all) {
+                if (!_sel.contains(c.id)) {
+                  out.add(c);
+                  continue;
+                }
+                final info = BinDb.i.lookup(c.pan);
+                if (info == null) {
+                  out.add(c);
+                  continue;
+                }
+                hits++;
+                out.add(c.copyWith(
+                  bank: info.bank,
+                  country: info.country,
+                  cardType: info.cardType,
+                  level: info.level,
+                ));
+              }
+
+              await notifier.replaceAll(out);
+              _snack(hits == 0 ? 'Sin coincidencias en la base' : '$hits enriquecidas');
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final all = ref.watch(cardsProvider);
+              final q = _q.text.trim().toLowerCase();
+
+              final list = all.where((c) {
+                if (_filter != null && c.status != _filter) return false;
+                if (q.isEmpty) return true;
+                return c.pan.contains(q) ||
+                    c.bank.toLowerCase().contains(q) ||
+                    c.country.toLowerCase().contains(q) ||
+                    c.bin.contains(q);
+              }).toList();
+
+              return Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+                    child: TextField(
+                      controller: _q,
+                      onChanged: (_) => setState(() {}),
+                      style: AppTextStyles.mono,
+                      decoration: InputDecoration(
+                        hintText: 'Buscar pan, BIN, banco o pais',
+                        hintStyle: AppTextStyles.caption,
+                        prefixIcon: const Icon(Icons.search, size: 18, color: AppColors.textLo),
+                        suffixIcon: q.isEmpty
+                            ? null
+                            : IconButton(
+                                icon: const Icon(Icons.close, size: 16),
+                                onPressed: () => setState(() => _q.clear()),
+                              ),
+                      ),
+                    ),
+                  ),
+                  const RunBar(),
+                  if (_selecting)
+                    Container(
+                      color: AppColors.bgElevated,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      child: Row(
+                        children: [
+                          Text('${_sel.length} sel.', style: AppTextStyles.body),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.auto_awesome, size: 18),
+                            onPressed: _enrichSelected,
+                            tooltip: 'Completar datos',
+                          ),
+                          IconButton(icon: const Icon(Icons.copy_all, size: 18), onPressed: _copySelected, tooltip: 'Copiar'),
+                          IconButton(
+                            icon: const Icon(Icons.play_arrow, size: 18),
+                            onPressed: () => ref.read(runProvider.notifier).run(ids: _sel.toList()),
+                            tooltip: 'Revisar',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline, size: 18, color: AppColors.red),
+                            onPressed: _deleteSelected,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => setState(() {
+                              _sel.clear();
+                              _selecting = false;
+                            }),
+                          ),
+                        ],
+                      ),
+                    ),
+                  _filterBar(all),
+                  Expanded(
+                    child: list.isEmpty
+                        ? const EmptyState(text: 'Sin tarjetas con este filtro', icon: Icons.credit_card_off_outlined)
+                        : ListView.builder(
+                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 90),
+                            itemCount: list.length,
+                            itemBuilder: (_, i) => _tile(list[i]),
+                          ),
+                  ),
+                ],
+              );
+            }
+
+            Widget _filterBar(List<CreditCard> all) {
+              final counts = <CheckStatus, int>{};
+              for (final c in all) {
+                counts[c.status] = (counts[c.status] ?? 0) + 1;
+              }
+
+              return SizedBox(
+                height: 46,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  children: [
+                    _chip('todas', all.length, _filter == null, () => setState(() => _filter = null)),
+                    for (final s in CheckStatus.values)
+                      if ((counts[s] ?? 0) > 0)
+                        _chip(s.label, counts[s]!, _filter == s, () => setState(() => _filter = _filter == s ? null : s)),
+                  ],
+                ),
+              );
+            }
+
+            Widget _chip(String label, int n, bool on, VoidCallback tap) => Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: GestureDetector(
+                    onTap: tap,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: on ? AppColors.lime.withOpacity(0.15) : AppColors.glass,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: on ? AppColors.lime.withOpacity(0.5) : AppColors.glassStroke),
+                      ),
+                      child: Text(
+                        '$label $n',
+                        style: TextStyle(fontSize: 12, color: on ? AppColors.lime : AppColors.textMid),
+                      ),
+                    ),
+                  ),
+                );
+
+            Widget _tile(CreditCard c) {
+              final sel = _sel.contains(c.id);
+
+              final color = switch (c.status) {
+                CheckStatus.live => AppColors.lime,
+                CheckStatus.dead => AppColors.red,
+                CheckStatus.unknown => AppColors.grey,
+                CheckStatus.checking => AppColors.cyan,
+                CheckStatus.unchecked => AppColors.textLo,
+              };
+
+              return CardRow(
+                selected: sel,
+                onTap: () {
+                  if (_selecting) {
+                    setState(() {
+                      if (!_sel.remove(c.id)) _sel.add(c.id);
+                      if (_sel.isEmpty) _selecting = false;
+                    });
+                  } else {
+                    _detail(c);
+                  }
+                },
+                onLongPress: () => setState(() {
+                  _selecting = true;
+                  _sel.add(c.id);
+                }),
+                child: Row(
+                  children: [
+                    if (_selecting)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 10),
+                        child: Icon(
+                          sel ? Icons.check_circle : Icons.circle_outlined,
+                          size: 18,
+                          color: sel ? AppColors.lime : AppColors.textLo,
+                        ),
+                      ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(maskPan(c.pan), style: AppTextStyles.mono),
+                          const SizedBox(height: 3),
+                          Text(
+                            '${schemeNames[c.brand] ?? c.brand} · ${c.expLabel} · ${c.cvv}'
+                            '${c.bank.isEmpty ? '' : ' · ${c.bank}'}'
+                            '${c.country.isEmpty ? '' : ' · ${flagEmoji(c.country)} ${c.country}'}',
+                            style: AppTextStyles.caption,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (c.message.isNotEmpty)
+                            Text(
+                              '${c.gateway} · ${c.message}${c.latencyMs > 0 ? ' · ${c.latencyMs}ms' : ''}',
+                              style: AppTextStyles.tiny,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    StatusPill(text: c.status.label, color: color),
+                  ],
+                ),
+              );
+            }
+
+            void _detail(CreditCard c) {
+              showModalBottomSheet<void>(
+                context: context,
+                backgroundColor: AppColors.bgElevated,
+                shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                builder: (ctx) => Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(maskPan(c.pan), style: AppTextStyles.h2),
+                      const SizedBox(height: 14),
+                      _row('Pan completo', c.pan),
+                      _row('Vencimiento', c.expLabel),
+                      _row('CVV', c.cvv),
+                      _row('Marca', schemeNames[c.brand] ?? c.brand),
+                      if (c.bank.isNotEmpty) _row('Banco', c.bank),
+                      if (c.country.isNotEmpty)
+                        _row('Pais', '${flagEmoji(c.country)} ${countryNames[c.country] ?? c.country}'),
+                      if (c.cardType.isNotEmpty) _row('Tipo', c.cardType),
+                      if (c.level.isNotEmpty) _row('Nivel', c.level),
+                      _row('Estado', c.status.label),
+                      if (c.message.isNotEmpty) _row('Respuesta', c.message),
+                      if (c.checkedAt != null) _row('Revisada', c.checkedAt!.toLocal().toString().substring(0, 16)),
+                      const SizedBox(height: 16),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          NeonButton(
+                            label: 'Copiar',
+                            icon: Icons.copy,
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(text: c.line));
+                              if (ctx.mounted) Navigator.pop(ctx);
+                              _snack('Copiada');
+                            },
+                          ),
+                          NeonButton(
+                            label: 'Revisar',
+                            icon: Icons.play_arrow,
+                            color: AppColors.cyan,
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              ref.read(runProvider.notifier).run(ids: [c.id]);
+                            },
+                          ),
+                          NeonButton(
+                            label: 'Borrar',
+                            icon: Icons.delete_outline,
+                            color: AppColors.red,
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              ref.read(cardsProvider.notifier).remove(c.id);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Widget _row(String k, String v) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(width: 110, child: Text(k, style: AppTextStyles.caption)),
+                      Expanded(child: Text(v, style: AppTextStyles.body)),
+                    ],
+                  ),
+                );
+          }
+          DART
+
+          cat > lib/screens/import.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import '../bin_db.dart';
+          import '../core.dart';
+          import '../import_engine.dart';
+          import '../models.dart';
+          import '../providers.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class ImportScreen extends ConsumerStatefulWidget {
+            const ImportScreen({super.key});
+            @override
+            ConsumerState<ImportScreen> createState() => _ImportScreenState();
+          }
+
+          class _ImportScreenState extends ConsumerState<ImportScreen> {
+            final _ctrl = TextEditingController();
+            ImportResult? _res;
+            bool _enrich = true;
+            bool _repair = true;
+            bool _busy = false;
+            String _progress = '';
+
+            @override
+            void dispose() {
+              _ctrl.dispose();
+              super.dispose();
+            }
+
+            void _parse() => setState(() => _res = parseCards(_ctrl.text, repairLuhn: _repair));
+
+            Future<void> _commit({required bool andRun}) async {
+              final res = _res;
+              if (res == null) return;
+
+              setState(() {
+                _busy = true;
+                _progress = '';
+              });
+
+              await BinDb.i.loadIndex();
+
+              var done = 0;
+              final enriched = <CreditCard>[];
+
+              for (final c in res.cards) {
+                if (_enrich) {
+                  final info = BinDb.i.lookup(c.pan);
+                  enriched.add(
+                    info == null
+                        ? c
+                        : c.copyWith(bank: info.bank, country: info.country, cardType: info.cardType, level: info.level),
+                  );
+                } else {
+                  enriched.add(c);
+                }
+                done++;
+                if (done % 25 == 0 && mounted) setState(() => _progress = '$done/${res.cards.length}');
+              }
+
+              await ref.read(cardsProvider.notifier).addAll(enriched);
+
+              if (!mounted) return;
+              setState(() {
+                _busy = false;
+                _progress = '';
+                _ctrl.clear();
+                _res = null;
+              });
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('${res.cards.length} tarjetas agregadas')),
+              );
+
+              if (andRun) {
+                ref.read(tabProvider.notifier).state = 0;
+                await ref.read(runProvider.notifier).run(ids: enriched.map((c) => c.id).toList());
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final res = _res;
+
+              return ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  const SectionHeader('Pega las lineas'),
+                  GlassPanel(
+                    child: TextField(
+                      controller: _ctrl,
+                      maxLines: 10,
+                      style: AppTextStyles.mono,
+                      decoration: const InputDecoration(
+                        hintText: 'pan|mm|yy|cvv  ·  una por linea  ·  acepta barras, comas o espacios',
+                        hintStyle: AppTextStyles.caption,
+                        border: InputBorder.none,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  GlassPanel(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Column(
+                      children: [
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Completar datos del BIN', style: AppTextStyles.body),
+                          subtitle: const Text('Banco, pais, tipo y nivel', style: AppTextStyles.caption),
+                          value: _enrich,
+                          activeColor: AppColors.lime,
+                          onChanged: (v) => setState(() => _enrich = v),
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Reparar digito de Luhn', style: AppTextStyles.body),
+                          subtitle: const Text('Corrige numeros mal tipeados', style: AppTextStyles.caption),
+                          value: _repair,
+                          activeColor: AppColors.cyan,
+                          onChanged: (v) => setState(() => _repair = v),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      NeonButton(label: 'Analizar', icon: Icons.search, onPressed: _busy ? null : _parse),
+                      const SizedBox(width: 10),
+                      NeonButton(
+                        label: 'Limpiar',
+                        color: AppColors.textMid,
+                        onPressed: _busy
+                            ? null
+                            : () => setState(() {
+                                  _ctrl.clear();
+                                  _res = null;
+                                }),
+                      ),
+                    ],
+                  ),
+                  if (res != null) ...[
+                    const SectionHeader('Vista previa'),
+                    GlassPanel(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${fmtInt(res.cards.length)} validas',
+                            style: const TextStyle(color: AppColors.lime, fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '${fmtInt(res.duplicates)} repetidas · ${fmtInt(res.junk)} basura · '
+                            '${fmtInt(res.fixed)} reparadas · ${fmtInt(res.expired)} vencidas',
+                            style: AppTextStyles.caption,
+                          ),
+                          const SizedBox(height: 12),
+                          ...res.cards.take(12).map(
+                                (c) => Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 3),
+                                  child: Text('${maskPan(c.pan)}  ${c.expLabel}  ${c.cvv}', style: AppTextStyles.mono),
+                                ),
+                              ),
+                          if (res.cards.length > 12)
+                            Text('y ${res.cards.length - 12} mas', style: AppTextStyles.caption),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    NeonButton(
+                      label: _busy ? 'Procesando $_progress' : 'Guardar ${fmtInt(res.cards.length)}',
+                      icon: Icons.save_alt,
+                      expand: true,
+                      onPressed: res.cards.isEmpty || _busy ? null : () => _commit(andRun: false),
+                    ),
+                    const SizedBox(height: 10),
+                    NeonButton(
+                      label: 'Procesar masa',
+                      icon: Icons.bolt,
+                      color: AppColors.cyan,
+                      expand: true,
+                      onPressed: res.cards.isEmpty || _busy ? null : () => _commit(andRun: true),
+                    ),
+                  ],
+                ],
+              );
+            }
+          }
+          DART
+
+          cat > lib/screens/analysis.dart <<'DART'
+          import 'dart:convert';
+          import 'dart:io';
+
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+          import 'package:path_provider/path_provider.dart';
+          import 'package:share_plus/share_plus.dart';
+
+          import '../core.dart';
+          import '../models.dart';
+          import '../providers.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class AnalysisScreen extends ConsumerStatefulWidget {
+            const AnalysisScreen({super.key});
+            @override
+            ConsumerState<AnalysisScreen> createState() => _AnalysisScreenState();
+          }
+
+          class _AnalysisScreenState extends ConsumerState<AnalysisScreen> {
+            String _note = '';
+
+            void _snack(String m) {
+              if (!mounted) return;
+              setState(() => _note = m);
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+            }
+
+            Future<void> _dedupe() async {
+              final seen = <String>{};
+              final out = <CreditCard>[];
+              var removed = 0;
+
+              for (final c in ref.read(cardsProvider)) {
+                if (!seen.add(c.pan)) {
+                  removed++;
+                  continue;
+                }
+                out.add(c);
+              }
+
+              await ref.read(cardsProvider.notifier).replaceAll(out);
+              _snack('$removed duplicadas eliminadas');
+            }
+
+            Future<void> _repairLuhn() async {
+              var n = 0;
+              final out = ref.read(cardsProvider).map((c) {
+                if (luhn(c.pan)) return c;
+                final fixed = fixLuhn(c.pan);
+                if (fixed == c.pan) return c;
+                n++;
+                return c.copyWith(pan: fixed, brand: schemeOf(fixed));
+              }).toList();
+
+              await ref.read(cardsProvider.notifier).replaceAll(out);
+              _snack('$n numeros reparados');
+            }
+
+            Future<void> _export(String format) async {
+              final all = ref.read(cardsProvider);
+              if (all.isEmpty) {
+                _snack('Boveda vacia');
+                return;
+              }
+
+              final String body;
+              final String name;
+
+              switch (format) {
+                case 'json':
+                  body = const JsonEncoder.withIndent('  ').convert(all.map((c) => c.toJson()).toList());
+                  name = 'boveda.json';
+                  break;
+                case 'txt':
+                  body = all.map((c) => c.line).join('\n');
+                  name = 'boveda.txt';
+                  break;
+                default:
+                  final b = StringBuffer('pan|mm|yy|cvv|marca|banco|pais|tipo|nivel|estado\n');
+                  for (final c in all) {
+                    b.write('${c.pan}|${c.expMonth}|${c.expYear}|${c.cvv}|${c.brand}|'
+                        '${c.bank}|${c.country}|${c.cardType}|${c.level}|${c.status.label}\n');
+                  }
+                  body = b.toString();
+                  name = 'boveda.csv';
+              }
+
+              try {
+                final dir = await getApplicationDocumentsDirectory();
+                final f = File('${dir.path}/$name');
+                await f.writeAsString(body, flush: true);
+                await Share.shareXFiles([XFile(f.path)], text: 'CCheker Live · ${all.length} tarjetas');
+                _snack('Exportado $name');
+              } catch (_) {
+                await Clipboard.setData(ClipboardData(text: body));
+                _snack('Copiado al portapapeles');
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final all = ref.watch(cardsProvider);
+              final stats = ref.watch(statsProvider);
+
+              final live = all.where((c) => c.status == CheckStatus.live).length;
+              final dead = all.where((c) => c.status == CheckStatus.dead).length;
+              final unknown = all.where((c) => c.status == CheckStatus.unknown).length;
+              final unchecked = all.where((c) => c.status == CheckStatus.unchecked).length;
+              final expired = all.where((c) => c.expired).length;
+              final noLuhn = all.where((c) => !luhn(c.pan)).length;
+
+              final byBrand = <String, List<int>>{};
+              for (final c in all) {
+                final b = c.brand.isEmpty ? 'sin marca' : c.brand;
+                final e = byBrand.putIfAbsent(b, () => [0, 0]);
+                e[0]++;
+                if (c.status == CheckStatus.live) e[1]++;
+              }
+              final brands = byBrand.entries.toList()..sort((a, b) => b.value[0].compareTo(a.value[0]));
+
+              return ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  const SectionHeader('Resumen de la boveda'),
+                  Row(
+                    children: [
+                      StatCard(label: 'tarjetas', value: fmtInt(all.length)),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'vivas', value: fmtInt(live), color: AppColors.lime),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'tasa', value: fmtPct(all.isEmpty ? 0 : live / all.length), color: AppColors.cyan),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      StatCard(label: 'muertas', value: fmtInt(dead), color: AppColors.red),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'inciertas', value: fmtInt(unknown), color: AppColors.grey),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'sin revisar', value: fmtInt(unchecked), color: AppColors.textMid),
+                    ],
+                  ),
+                  const SectionHeader('Ultima corrida'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${fmtInt(stats.done)} de ${fmtInt(stats.total)} revisadas', style: AppTextStyles.body),
+                        const SizedBox(height: 6),
+                        Text(
+                          '${fmtInt(stats.live)} vivas · ${fmtInt(stats.dead)} muertas · ${fmtInt(stats.errors)} errores',
+                          style: AppTextStyles.caption,
+                        ),
+                        const SizedBox(height: 10),
+                        SegmentedProgress(value: stats.pct),
+                        const SizedBox(height: 6),
+                        Text('Tasa de acierto: ${fmtPct(stats.hitRate)}', style: AppTextStyles.caption),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Por marca'),
+                  GlassPanel(
+                    child: brands.isEmpty
+                        ? const Text('Sin datos.', style: AppTextStyles.caption)
+                        : Column(
+                            children: brands.take(10).map((e) {
+                              final total = e.value[0];
+                              final lv = e.value[1];
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 5),
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 100,
+                                      child: Text(e.key, style: AppTextStyles.caption, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                    ),
+                                    Expanded(
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(4),
+                                        child: LinearProgressIndicator(
+                                          value: total == 0 ? 0 : lv / total,
+                                          minHeight: 8,
+                                          backgroundColor: AppColors.glass,
+                                          valueColor: const AlwaysStoppedAnimation<Color>(AppColors.lime),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text('$lv/$total', style: AppTextStyles.tiny),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                  ),
+                  const SectionHeader('Mantenimiento'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('$noLuhn numeros con Luhn invalido · $expired vencidas', style: AppTextStyles.caption),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            NeonButton(label: 'Reparar Luhn', icon: Icons.build_outlined, color: AppColors.cyan, onPressed: _repairLuhn),
+                            NeonButton(label: 'Quitar duplicadas', icon: Icons.filter_alt_off_outlined, color: AppColors.amber, onPressed: _dedupe),
+                            NeonButton(
+                              label: 'Vencidas a muertas',
+                              icon: Icons.event_busy,
+                              color: AppColors.violet,
+                              onPressed: () async {
+                                final out = ref
+                                    .read(cardsProvider)
+                                    .map((c) => c.expired ? c.copyWith(status: CheckStatus.dead) : c)
+                                    .toList();
+                                await ref.read(cardsProvider.notifier).replaceAll(out);
+                                _snack('$expired marcadas');
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Exportar'),
+                  GlassPanel(
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        NeonButton(label: 'CSV', icon: Icons.table_chart_outlined, onPressed: () => _export('csv')),
+                        NeonButton(label: 'TXT', icon: Icons.notes, color: AppColors.cyan, onPressed: () => _export('txt')),
+                        NeonButton(label: 'JSON', icon: Icons.data_object, color: AppColors.violet, onPressed: () => _export('json')),
+                      ],
+                    ),
+                  ),
+                  if (_note.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 14),
+                      child: Text(_note, style: AppTextStyles.caption),
+                    ),
+                ],
+              );
+            }
+          }
+          DART
+
+          cat > lib/screens/proxies.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import '../checker.dart';
+          import '../core.dart';
+          import '../models.dart';
+          import '../providers.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class ProxiesScreen extends ConsumerStatefulWidget {
+            const ProxiesScreen({super.key});
+            @override
+            ConsumerState<ProxiesScreen> createState() => _ProxiesScreenState();
+          }
+
+          class _ProxiesScreenState extends ConsumerState<ProxiesScreen> {
+            bool _testing = false;
+            final _exit = <String, String>{};
+
+            void _snack(String m) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+            }
+
+            Future<void> _add() async {
+              final host = TextEditingController();
+              final port = TextEditingController();
+              final user = TextEditingController();
+              final pass = TextEditingController();
+              var kind = ProxyKind.http;
+
+              await showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                backgroundColor: AppColors.bgElevated,
+                shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                builder: (ctx) => StatefulBuilder(
+                  builder: (ctx, setLocal) => Padding(
+                    padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom + 20, left: 20, right: 20, top: 20),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Nuevo proxy', style: AppTextStyles.h2),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              for (final k in ProxyKind.values)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: ChoiceChip(
+                                    label: Text(k == ProxyKind.socks5 ? 'SOCKS5' : 'HTTP'),
+                                    selected: kind == k,
+                                    onSelected: (_) => setLocal(() => kind = k),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(controller: host, style: AppTextStyles.mono, decoration: const InputDecoration(labelText: 'host o IP')),
+                          TextField(
+                            controller: port,
+                            keyboardType: TextInputType.number,
+                            style: AppTextStyles.mono,
+                            decoration: const InputDecoration(labelText: 'puerto'),
+                          ),
+                          TextField(controller: user, style: AppTextStyles.mono, decoration: const InputDecoration(labelText: 'usuario')),
+                          TextField(controller: pass, style: AppTextStyles.mono, decoration: const InputDecoration(labelText: 'contrasena')),
+                          const SizedBox(height: 16),
+                          NeonButton(
+                            label: 'Agregar',
+                            icon: Icons.add,
+                            onPressed: () async {
+                              final p = int.tryParse(port.text.trim()) ?? 0;
+                              if (host.text.trim().isEmpty || p == 0) return;
+                              await ref.read(proxiesProvider.notifier).upsert(
+                                    ProxyNode(
+                                      id: newId(),
+                                      host: host.text.trim(),
+                                      port: p,
+                                      user: user.text.trim(),
+                                      pass: pass.text,
+                                      kind: kind,
+                                    ),
+                                  );
+                              if (ctx.mounted) Navigator.pop(ctx);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            Future<void> _paste() async {
+              final ctrl = TextEditingController();
+
+              await showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                backgroundColor: AppColors.bgElevated,
+                shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                builder: (ctx) => Padding(
+                  padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom + 20, left: 20, right: 20, top: 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Pegar lista', style: AppTextStyles.h2),
+                      const SizedBox(height: 4),
+                      const Text('host:puerto:usuario:clave por linea', style: AppTextStyles.caption),
+                      const SizedBox(height: 12),
+                      TextField(controller: ctrl, maxLines: 6, style: AppTextStyles.mono),
+                      const SizedBox(height: 14),
+                      NeonButton(
+                        label: 'Importar',
+                        icon: Icons.download_rounded,
+                        onPressed: () async {
+                          var n = 0;
+                          for (final line in ctrl.text.split(RegExp(r'[\r\n]+'))) {
+                            final t = line.trim();
+                            if (t.isEmpty) continue;
+                            final p = t.split(RegExp(r'[:\s@]+')).where((s) => s.isNotEmpty).toList();
+                            if (p.length < 2) continue;
+                            final port = int.tryParse(p[1]) ?? 0;
+                            if (port == 0) continue;
+                            await ref.read(proxiesProvider.notifier).upsert(
+                                  ProxyNode(
+                                    id: newId(),
+                                    host: p[0],
+                                    port: port,
+                                    user: p.length > 2 ? p[2] : '',
+                                    pass: p.length > 3 ? p[3] : '',
+                                  ),
+                                );
+                            n++;
+                          }
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          _snack('$n proxies importados');
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Future<void> _checkExits() async {
+              final list = ref.read(proxiesProvider);
+              if (list.isEmpty) return;
+
+              final engine = CheckEngine(ref.read(settingsProvider));
+              var cursor = 0;
+
+              Future<void> w() async {
+                while (true) {
+                  final i = cursor;
+                  if (i >= list.length) return;
+                  cursor++;
+                  final info = await engine.exitInfo(list[i]);
+                  if (mounted) setState(() => _exit[list[i].id] = info ?? 'sin respuesta');
+                }
+              }
+
+              await Future.wait(List.generate(4, (_) => w()));
+              engine.dispose();
+              _snack('IPs verificadas');
+            }
+
+            Future<void> _testAll() async {
+              final list = ref.read(proxiesProvider);
+              if (list.isEmpty) return;
+
+              setState(() => _testing = true);
+
+              final engine = CheckEngine(ref.read(settingsProvider));
+              var cursor = 0;
+
+              Future<void> worker() async {
+                while (true) {
+                  final i = cursor;
+                  if (i >= list.length) return;
+                  cursor++;
+                  final out = await engine.probe(list[i]);
+                  await ref.read(proxiesProvider.notifier).setHealth(
+                        list[i].id,
+                        out.ok ? ProxyHealth.up : ProxyHealth.down,
+                        out.ms,
+                      );
+                }
+              }
+
+              await Future.wait(List.generate(6, (_) => worker()));
+              engine.dispose();
+
+              if (!mounted) return;
+              setState(() => _testing = false);
+
+              final up = ref.read(proxiesProvider).where((p) => p.health == ProxyHealth.up).length;
+              _snack('$up de ${list.length} funcionan');
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final list = ref.watch(proxiesProvider);
+              final up = list.where((p) => p.health == ProxyHealth.up).length;
+
+              return ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${list.length} cargados · $up funcionando', style: AppTextStyles.body),
+                        const SizedBox(height: 4),
+                        const Text('Se rotan por intento. Con "proxy fijo" se usa uno por corrida.', style: AppTextStyles.caption),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            NeonButton(
+                              label: _testing ? 'probando' : 'Probar todos',
+                              icon: Icons.speed,
+                              onPressed: _testing ? null : _testAll,
+                            ),
+                            NeonButton(label: 'Agregar', icon: Icons.add, color: AppColors.cyan, onPressed: _add),
+                            NeonButton(label: 'Pegar lista', icon: Icons.download_rounded, color: AppColors.violet, onPressed: _paste),
+                            NeonButton(label: 'Ver IP de salida', icon: Icons.public, color: AppColors.cyan, onPressed: _checkExits),
+                            NeonButton(
+                              label: 'Borrar caidos',
+                              icon: Icons.delete_sweep,
+                              color: AppColors.red,
+                              onPressed: () async {
+                                final ids = list
+                                    .where((p) => p.health == ProxyHealth.down)
+                                    .map((p) => p.id)
+                                    .toList();
+                                for (final id in ids) {
+                                  await ref.read(proxiesProvider.notifier).remove(id);
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (list.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 40),
+                      child: EmptyState(text: 'Sin proxies cargados', icon: Icons.lan_outlined),
+                    )
+                  else
+                    ...list.map((p) {
+                      final color = p.health == ProxyHealth.up
+                          ? AppColors.lime
+                          : p.health == ProxyHealth.down
+                              ? AppColors.red
+                              : AppColors.textLo;
+
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: GlassPanel(
+                          child: Row(
+                            children: [
+                              Icon(
+                                p.kind == ProxyKind.socks5 ? Icons.vpn_lock : Icons.language,
+                                size: 18,
+                                color: AppColors.textMid,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(p.label, style: AppTextStyles.mono),
+                                    Text(
+                                      '${p.kind == ProxyKind.socks5 ? 'socks5' : 'http'} · '
+                                      '${p.health == ProxyHealth.up ? '${p.latencyMs} ms' : p.health.name}'
+                                      '${_exit[p.id] == null ? '' : ' · ${_exit[p.id]}'}',
+                                      style: AppTextStyles.caption,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              StatusPill(text: p.health == ProxyHealth.up ? 'ok' : p.health.name, color: color),
+                              IconButton(
+                                icon: const Icon(Icons.close, size: 16, color: AppColors.textLo),
+                                onPressed: () => ref.read(proxiesProvider.notifier).remove(p.id),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                ],
+              );
+            }
+          }
+          DART
+
+          cat > lib/screens/settings.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import '../bin_db.dart';
+          import '../checker.dart';
+          import '../core.dart';
+          import '../models.dart';
+          import '../net.dart';
+          import '../providers.dart';
+          import '../repos.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class SettingsScreen extends ConsumerStatefulWidget {
+            const SettingsScreen({super.key});
+            @override
+            ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+          }
+
+          class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+            late final TextEditingController _skey;
+            late final TextEditingController _dkey;
+            late final TextEditingController _pass;
+
+            @override
+            void initState() {
+              super.initState();
+              _skey = TextEditingController(text: ref.read(settingsProvider).stripeKey);
+              _dkey = TextEditingController(text: ref.read(settingsProvider).dorkillKey);
+              _pass = TextEditingController();
+              _boot();
+            }
+
+            Future<void> _boot() async {
+              if (await BinDb.i.installed()) {
+                await BinDb.i.loadIndex();
+                if (!mounted) return;
+                ref.read(binStatusProvider.notifier).state =
+                    BinStatus(installed: true, count: BinDb.i.count, note: 'archivo listo');
+              }
+            }
+
+            @override
+            void dispose() {
+              _skey.dispose();
+              _dkey.dispose();
+              _pass.dispose();
+              super.dispose();
+            }
+
+            void _snack(String m) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+            }
+
+            Future<void> _download() async {
+              final st = ref.read(binStatusProvider.notifier);
+              st.state = const BinStatus(busy: true, note: 'descargando');
+
+              try {
+                await BinDb.i.download(onProgress: (b, t) {
+                  st.state = st.state.copyWith(
+                    note: 'descargando ${(b / 1048576).toStringAsFixed(1)}/${(t / 1048576).toStringAsFixed(1)} MB',
+                  );
+                });
+                st.state = st.state.copyWith(note: 'indexando');
+                final n = await BinDb.i.buildIndex();
+                await ref.read(settingsProvider.notifier).setOfflineDb(true);
+                st.state = BinStatus(installed: true, count: n, note: 'lista');
+                _snack('Base lista: ${fmtInt(n)} BINs');
+              } catch (_) {
+                st.state = const BinStatus(note: 'error en la descarga');
+                _snack('Fallo la descarga');
+              }
+            }
+
+            Future<void> _drop() async {
+              await BinDb.i.drop();
+              await ref.read(settingsProvider.notifier).setOfflineDb(false);
+              ref.read(binStatusProvider.notifier).state = const BinStatus(note: 'borrada');
+              _snack('Base offline borrada');
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final s = ref.watch(settingsProvider);
+              final n = ref.read(settingsProvider.notifier);
+              final bin = ref.watch(binStatusProvider);
+
+              return ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  const SectionHeader('Motor de validacion'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _chip('Stripe', 'stripe', s.engine, n.setEngine),
+                            _chip('Dorkill', 'dorkill', s.engine, n.setEngine),
+                            _chip('Cascada', 'both', s.engine, n.setEngine),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          s.engine == 'stripe'
+                              ? 'Stripe: valida formato, vencimiento y CVV.'
+                              : s.engine == 'dorkill'
+                                  ? 'Dorkill: necesita una API key.'
+                                  : 'Cascada: cruza los dos. Viva solo si uno acepta; nunca marca muerta si hubo error de red.',
+                          style: AppTextStyles.caption,
+                        ),
+                        if (s.engine != 'dorkill') ...[
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _skey,
+                            style: AppTextStyles.mono,
+                            onSubmitted: n.setStripeKey,
+                            decoration: const InputDecoration(
+                              labelText: 'Stripe publishable key',
+                              labelStyle: AppTextStyles.caption,
+                            ),
+                          ),
+                        ],
+                        if (s.engine != 'stripe') ...[
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _dkey,
+                            style: AppTextStyles.mono,
+                            onSubmitted: n.setDorkillKey,
+                            decoration: const InputDecoration(
+                              labelText: 'API key de Dorkill',
+                              labelStyle: AppTextStyles.caption,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        Text('Reintentos por tarjeta: ${s.retries}', style: AppTextStyles.body),
+                        Slider(
+                          value: s.retries.toDouble(),
+                          min: 0,
+                          max: 3,
+                          divisions: 3,
+                          onChanged: (v) => n.setRetries(v.round()),
+                        ),
+                        Text('Timeout: ${s.timeoutSec}s', style: AppTextStyles.body),
+                        Slider(
+                          value: s.timeoutSec.toDouble(),
+                          min: 5,
+                          max: 60,
+                          divisions: 11,
+                          onChanged: (v) => n.setTimeoutSec(v.round()),
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Usar proxies', style: AppTextStyles.body),
+                          value: s.useProxies,
+                          activeColor: AppColors.lime,
+                          onChanged: n.setUseProxies,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Procesamiento masivo'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Concurrencia automatica', style: AppTextStyles.body),
+                          subtitle: const Text('Ajusta los workers segun la latencia de la red', style: AppTextStyles.caption),
+                          value: s.autoTune,
+                          activeColor: AppColors.lime,
+                          onChanged: n.setAutoTune,
+                        ),
+                        if (!s.autoTune) ...[
+                          Text('Workers simultaneos: ${s.concurrency}', style: AppTextStyles.body),
+                          Slider(
+                            value: s.concurrency.toDouble(),
+                            min: 1,
+                            max: 16,
+                            divisions: 15,
+                            onChanged: (v) => n.setConcurrency(v.round()),
+                          ),
+                        ],
+                        const Text(
+                          'Cada worker corre en su propio isolate: la interfaz no se congela ni con miles de tarjetas. '
+                          'Si se cae la red, la cola se pausa sola y reanuda al volver.',
+                          style: AppTextStyles.caption,
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('DNS por HTTPS', style: AppTextStyles.body),
+                          subtitle: const Text('Esquiva el DNS secuestrado del operador', style: AppTextStyles.caption),
+                          value: s.doh,
+                          activeColor: AppColors.cyan,
+                          onChanged: n.setDoh,
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Proxy fijo por corrida', style: AppTextStyles.body),
+                          subtitle: const Text('Apagado: rota la IP en cada intento', style: AppTextStyles.caption),
+                          value: s.proxySticky,
+                          activeColor: AppColors.violet,
+                          onChanged: n.setProxySticky,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Base offline de BINs'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          bin.installed
+                              ? 'Instalada · ${fmtInt(bin.count)} BINs indexados'
+                              : 'Cientos de miles de BINs. Sin esto cada consulta depende de internet.',
+                          style: AppTextStyles.body,
+                        ),
+                        if (bin.note.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(bin.note, style: AppTextStyles.caption),
+                        ],
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            NeonButton(
+                              label: bin.busy ? 'trabajando' : 'Descargar y activar',
+                              icon: Icons.cloud_download_outlined,
+                              onPressed: bin.busy ? null : _download,
+                            ),
+                            if (bin.installed)
+                              NeonButton(
+                                label: 'Borrar',
+                                icon: Icons.delete_outline,
+                                color: AppColors.red,
+                                onPressed: bin.busy ? null : _drop,
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Seguridad'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextField(
+                          controller: _pass,
+                          obscureText: true,
+                          keyboardType: TextInputType.number,
+                          style: AppTextStyles.mono,
+                          decoration: const InputDecoration(
+                            labelText: 'Nuevo PIN (vacio para quitar)',
+                            labelStyle: AppTextStyles.caption,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            NeonButton(
+                              label: 'Guardar PIN',
+                              icon: Icons.password,
+                              onPressed: () async {
+                                await Vault.i.setPassword(_pass.text);
+                                _pass.clear();
+                                _snack(Vault.i.hasPassword ? 'PIN guardado' : 'PIN eliminado');
+                              },
+                            ),
+                            NeonButton(
+                              label: 'Bloquear ahora',
+                              icon: Icons.lock_outline,
+                              color: AppColors.cyan,
+                              onPressed: () {
+                                Vault.i.lock();
+                                ref.read(lockProvider.notifier).state = true;
+                              },
+                            ),
+                          ],
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Desbloqueo con huella', style: AppTextStyles.body),
+                          value: s.biometrics,
+                          activeColor: AppColors.lime,
+                          onChanged: (v) async {
+                            if (v && !Vault.i.hasPassword) {
+                              _snack('Pon un PIN primero');
+                              return;
+                            }
+                            n.setBiometrics(v);
+                            if (v) {
+                              await Vault.i.rememberPass();
+                            } else {
+                              await Vault.i.forgetPass();
+                            }
+                          },
+                        ),
+                        Text('Bloqueo automatico: ${s.autoLockMin} min', style: AppTextStyles.body),
+                        Slider(
+                          value: s.autoLockMin.toDouble(),
+                          min: 1,
+                          max: 30,
+                          divisions: 29,
+                          onChanged: (v) => n.setAutoLock(v.round()),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Red'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Consumer(builder: (_, ref, __) {
+                          final net = ref.watch(netProvider);
+                          return Row(
+                            children: [
+                              Icon(
+                                net.online ? Icons.wifi : Icons.wifi_off,
+                                size: 16,
+                                color: net.online ? AppColors.lime : AppColors.red,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  net.online
+                                      ? (net.wifi ? 'conectado por wifi' : 'conectado por datos')
+                                      : 'sin conexion',
+                                  style: AppTextStyles.body,
+                                ),
+                              ),
+                              Text('${net.latencyMs}ms', style: AppTextStyles.caption),
+                            ],
+                          );
+                        }),
+                        const SizedBox(height: 10),
+                        NeonButton(
+                          label: 'Probar red',
+                          icon: Icons.speed,
+                          color: AppColors.cyan,
+                          onPressed: () async {
+                            final engine = CheckEngine(s);
+                            var ok = 0;
+                            var ms = 0;
+                            for (var i = 0; i < 5; i++) {
+                              final r = await engine.probe(null);
+                              if (r.ok) ok++;
+                              ms += r.ms;
+                            }
+                            engine.dispose();
+                            NetSense.i.latencyMs = ok == 0 ? 0 : ms ~/ ok;
+                            _snack(ok == 0 ? 'Sin respuesta' : 'Latencia media ${NetSense.i.latencyMs}ms');
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Datos'),
+                  GlassPanel(
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        NeonButton(
+                          label: 'Vaciar boveda',
+                          icon: Icons.delete_sweep,
+                          color: AppColors.red,
+                          onPressed: () async {
+                            await ref.read(cardsProvider.notifier).clear();
+                            ref.read(statsProvider.notifier).clear();
+                            _snack('Boveda vaciada');
+                          },
+                        ),
+                        NeonButton(
+                          label: 'Vaciar proxies',
+                          icon: Icons.lan_outlined,
+                          color: AppColors.amber,
+                          onPressed: () async {
+                            for (final p in ref.read(proxiesProvider).toList()) {
+                              await ref.read(proxiesProvider.notifier).remove(p.id);
+                            }
+                            _snack('Proxies borrados');
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 26),
+                  Center(
+                    child: Column(
+                      children: [
+                        const Text(appName, style: AppTextStyles.caption),
+                        const SizedBox(height: 4),
+                        Text('version $appVersion  ·  build $appBuild  ·  $appTag', style: AppTextStyles.tiny),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 40),
+                ],
+              );
+            }
+
+            Widget _chip(String label, String value, String current, void Function(String) onPick) => GestureDetector(
+                  onTap: () => onPick(value),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: current == value ? AppColors.lime.withOpacity(0.15) : AppColors.glass,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: current == value ? AppColors.lime.withOpacity(0.5) : AppColors.glassStroke,
+                      ),
+                    ),
+                    child: Text(
+                      label,
+                      style: TextStyle(fontSize: 12, color: current == value ? AppColors.lime : AppColors.textMid),
+                    ),
+                  ),
+                );
+          }
+          DART
+
+          cat > /tmp/android_patch.sh <<'SH'
+          set -e
+          MAN=android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="ccheker_live"/android:label="CCheker Live"/' "$MAN"
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>\n    <application|' "$MAN"
+
+          MA=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n1)
+          PKG=$(echo "$MA" | sed 's|android/app/src/main/kotlin/||; s|/MainActivity.kt||; s|/|.|g')
+          cat > "$MA" <<KT
+          package $PKG
+
+          import io.flutter.embedding.android.FlutterFragmentActivity
+
+          class MainActivity : FlutterFragmentActivity()
+          KT
+
+          GR=android/app/build.gradle
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' "$GR" || true
+          sed -i 's/minSdkVersion 21/minSdkVersion 23/' "$GR" || true
+          sed -i 's/minSdkVersion 19/minSdkVersion 23/' "$GR" || true
+          SH
+          bash /tmp/android_patch.sh
+
+          flutter pub get
+          flutter build apk --release
+          ls -lh build/app/outputs/flutter-apk/
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccheker-live-v5-1
+          path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
