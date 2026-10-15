@@ -14,7 +14,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.2'
+          flutter-version: '3.24.5'
           channel: stable
           cache: true
 
@@ -148,9 +148,10 @@ jobs:
           KT
 
           GR=android/app/build.gradle
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' "$GR" || true
-          sed -i 's/minSdkVersion 21/minSdkVersion 23/' "$GR" || true
-          sed -i 's/minSdkVersion 19/minSdkVersion 23/' "$GR" || true
+          sed -i -E 's/minSdkVersion flutter\.minSdkVersion/minSdkVersion 23/' "$GR" || true
+          sed -i -E 's/minSdk = flutter\.minSdkVersion/minSdk 23/' "$GR" || true
+          sed -i -E 's/minSdkVersion 21/minSdkVersion 23/' "$GR" || true
+          sed -i -E 's/minSdkVersion 19/minSdkVersion 23/' "$GR" || true
           echo "android parcheado"
 
       - name: Escribir codigo
@@ -164,7 +165,7 @@ jobs:
           version: 6.0.0+10
 
           environment:
-            sdk: '>=3.3.0 <4.0.0'
+            sdk: '>=3.5.0 <4.0.0'
 
           dependencies:
             flutter:
@@ -1615,11 +1616,11 @@ jobs:
                   final user = p.user;
                   final pass = p.pass;
                   hc.authenticateProxy = (host, port, scheme, realm) async {
-                    hc.addProxyCredentials(host, port, realm, HttpClientBasicCredentials(user, pass));
+                    hc.addProxyCredentials(host, port, realm ?? '', HttpClientBasicCredentials(user, pass));
                     return true;
                   };
                   hc.authenticate = (uri, scheme, realm) async {
-                    hc.addCredentials(uri, realm, HttpClientBasicCredentials(user, pass));
+                    hc.addCredentials(uri, realm ?? '', HttpClientBasicCredentials(user, pass));
                     return true;
                   };
                 }
@@ -1653,7 +1654,7 @@ jobs:
 
               final Socket sock = uri.isScheme('https') ? await SecureSocket.secure(raw, host: uri.host) : raw;
 
-              return ConnectionTask.fromSocket(sock, Future<Socket>.value(sock));
+              return ConnectionTask.fromSocket<Socket>(Future<Socket>.value(sock), sock.destroy);
             }
 
             void dispose() {
@@ -2006,8 +2007,8 @@ jobs:
                   if (ty >= 0) cType = ty;
                   final ca = find(['category', 'level', 'card_level']);
                   if (ca >= 0) cCat = ca;
-                  final is = find(['issuer', 'bank', 'bank_name']);
-                  if (is >= 0) cIssuer = is;
+                  final iss = find(['issuer', 'bank', 'bank_name']);
+                  if (iss >= 0) cIssuer = iss;
                   final a2 = find(['alpha_2', 'country_code', 'iso']);
                   if (a2 >= 0) cA2 = a2;
                   continue;
@@ -4958,6 +4959,7 @@ jobs:
           import 'package:flutter/material.dart';
           import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+          import '../checker.dart';
           import '../core.dart';
           import '../finder.dart';
           import '../models.dart';
@@ -6720,6 +6722,17 @@ jobs:
         run: |
           cd ccheker_live
           flutter pub get
+
+          # AGP 8 exige namespace en cada modulo: se inyecta en los plugins que
+          # todavia no lo declaran, tomandolo de su propio AndroidManifest.
+          for g in $(find ~/.pub-cache/hosted/pub.dev -maxdepth 3 -name build.gradle -path "*/android/*"); do
+            grep -q "namespace" "$g" && continue
+            man="$(dirname "$g")/src/main/AndroidManifest.xml"
+            [ -f "$man" ] || continue
+            ns=$(grep -o 'package="[^"]*"' "$man" | head -1 | sed 's/package="//; s/"//')
+            [ -n "$ns" ] && sed -i "0,/^android {/s||android {\n    namespace '$ns'|" "$g"
+          done
+
           flutter analyze --no-fatal-infos || true
           flutter build apk --release
           ls -lh build/app/outputs/flutter-apk/
