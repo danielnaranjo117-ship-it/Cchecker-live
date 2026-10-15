@@ -14,7 +14,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.2'
+          flutter-version: '3.24.5'
           channel: stable
           cache: true
 
@@ -1355,202 +1355,7 @@ jobs:
           }
           DART
 
-          cat > lib/checker.dart <<'DART'
-          import 'dart:convert';
-          import 'dart:io';
-          import 'dart:math';
-
-          import 'package:http/http.dart' as http;
-          import 'package:http/io_client.dart';
-
-          import 'core.dart';
-          import 'models.dart';
-          import 'net.dart';
-
-          class ProbeResult {
-            const ProbeResult({required this.ok, required this.ms});
-            final bool ok;
-            final int ms;
-          }
-
-          class CheckResult {
-            const CheckResult({required this.status, required this.message, this.gateway = '', this.latencyMs = 0});
-            final CheckStatus status;
-            final String message;
-            final String gateway;
-            final int latencyMs;
-          }
-
-          class CheckEngine {
-            CheckEngine(this.cfg, {List<ProxyNode>? proxies}) : _proxies = proxies ?? const [];
-
-            final Settings cfg;
-            final List<ProxyNode> _proxies;
-            final _rnd = Random();
-            final _clients = <String, http.Client>{};
-
-            http.Client _client(ProxyNode? p) {
-              final key = p == null ? 'direct' : '${p.kind.name}|${p.host}:${p.port}';
-
-              final cached = _clients[key];
-              if (cached != null) return cached;
-
-              final hc = HttpClient()
-                ..connectionTimeout = Duration(seconds: cfg.timeoutSec)
-                ..idleTimeout = const Duration(seconds: 20);
-
-              if (p != null) {
-                hc.findProxy = (_) =>
-                    p.kind == ProxyKind.socks5 ? 'SOCKS ${p.host}:${p.port}' : 'PROXY ${p.host}:${p.port}';
-
-                if (p.user.isNotEmpty) {
-                  final user = p.user;
-                  final pass = p.pass;
-                  hc.authenticateProxy = (host, port, scheme, realm) {
-                    hc.addProxyCredentials(host, port, realm, HttpClientBasicCredentials(user, pass));
-                    return true;
-                  };
-                  hc.authenticate = (uri, scheme, realm) {
-                    hc.addCredentials(uri, realm, HttpClientBasicCredentials(user, pass));
-                    return true;
-                  };
-                }
-              } else if (cfg.doh) {
-                hc.connectionFactory = _viaDoh;
-              }
-
-              final c = IOClient(hc);
-              _clients[key] = c;
-              return c;
-            }
-
-            Future<ConnectionTask<Socket>> _viaDoh(Uri uri, String? proxyHost, int? proxyPort) async {
-              final t = Duration(seconds: cfg.timeoutSec);
-
-              var target = uri.host;
-              if (InternetAddress.tryParse(target) == null) {
-                try {
-                  final ips = await NetSense.i.resolve(target);
-                  if (ips.isNotEmpty) target = ips.first;
-                } catch (_) {}
-              }
-
-              Socket raw;
-              try {
-                raw = await Socket.connect(target, uri.port, timeout: t);
-              } catch (_) {
-                if (target == uri.host) rethrow;
-                raw = await Socket.connect(uri.host, uri.port, timeout: t);
-              }
-
-              final Socket sock =
-                  uri.isScheme('https') ? await SecureSocket.secure(raw, host: uri.host) : raw;
-
-              return ConnectionTask.fromSocket(sock, Future<Socket>.value(sock));
-            }
-
-            void dispose() {
-              for (final c in _clients.values) {
-                c.close();
-              }
-              _clients.clear();
-            }
-
-            ProxyNode? _pick() {
-              if (!cfg.useProxies) return null;
-              final pool = _proxies.where((p) => p.health != ProxyHealth.down).toList();
-              if (pool.isEmpty) return null;
-              return pool[_rnd.nextInt(pool.length)];
-            }
-
-            String get _sk => cfg.stripeKey.isEmpty ? stripePk : cfg.stripeKey;
-
-            Future<ProbeResult> probe(ProxyNode? p) async {
-              final sw = Stopwatch()..start();
-              try {
-                final r = await _client(p).get(Uri.parse(cfg.probeUrl)).timeout(Duration(seconds: cfg.timeoutSec));
-                sw.stop();
-                return ProbeResult(ok: r.statusCode < 500, ms: sw.elapsedMilliseconds);
-              } catch (_) {
-                sw.stop();
-                return ProbeResult(ok: false, ms: sw.elapsedMilliseconds);
-              }
-            }
-
-            Future<String?> exitInfo(ProxyNode p) async {
-              try {
-                final r = await _client(p)
-                    .get(Uri.parse('https://api.ipify.org?format=json'))
-                    .timeout(Duration(seconds: cfg.timeoutSec));
-                if (r.statusCode != 200) return null;
-                return (jsonDecode(r.body) as Map<String, dynamic>)['ip'] as String?;
-              } catch (_) {
-                return null;
-              }
-            }
-
-            Future<CheckResult> check(CreditCard card) async {
-              final max = cfg.retries + 1;
-              var attempt = 0;
-
-              while (attempt < max) {
-                final p = _pick();
-                final r = cfg.engine == 'both'
-                    ? await _cascade(card, p)
-                    : cfg.engine == 'dorkill'
-                        ? await _dorkill(card, p)
-                        : await _stripe(card, p);
-
-                if (r.status != CheckStatus.unknown) return r;
-
-                attempt++;
-                if (attempt < max) await Future.delayed(Duration(milliseconds: NetSense.i.backoff(attempt)));
-              }
-
-              return const CheckResult(status: CheckStatus.unknown, message: 'sin respuesta', gateway: '');
-            }
-
-            Future<CheckResult> _stripe(CreditCard card, ProxyNode? p) async {
-              final sw = Stopwatch()..start();
-              try {
-                final r = await _client(p)
-                    .post(
-                      Uri.parse(stripeTokenUrl),
-                      headers: {
-                        'Authorization': 'Bearer $_sk',
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                      },
-                      body: {
-                        'card[number]': card.pan,
-                        'card[exp_month]': card.expMonth.toString().padLeft(2, '0'),
-                        'card[exp_year]': card.expYear.toString().padLeft(2, '0'),
-                        'card[cvc]': card.cvv,
-                      },
-                    )
-                    .timeout(Duration(seconds: cfg.timeoutSec));
-                sw.stop();
-
-                final j = jsonDecode(r.body) as Map<String, dynamic>;
-
-                if (r.statusCode == 200 && j['id'] != null) {
-                  return CheckResult(status: CheckStatus.live, message: 'aprobada', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
-                }
-
-                final err = (j['error'] as Map?) ?? const {};
-                final code = (err['code'] ?? '').toString();
-                final decline = (err['decline_code'] ?? '').toString();
-                final msg = (err['message'] ?? 'rechazada').toString();
-
-                if (code == 'card_declined') {
-                  return CheckResult(status: CheckStatus.dead, message: decline.isEmpty ? 'declinada' : decline, gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
-                }
-                if (code == 'incorrect_number' || code == 'invalid_number') {
-                  return CheckResult(status: CheckStatus.dead, message: 'numero invalido', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
-                }
-                if (code == 'expired_card') {
-                  return CheckResult(status: CheckStatus.dead, message: 'vencida', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
-                }
-                if (code == 'incorrect_cvc') {
+          if (code == 'incorrect_cvc') {
                   return CheckResult(status: CheckStatus.dead, message: 'cvv incorrecto', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
                 }
                 return CheckResult(status: CheckStatus.unknown, message: msg, gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
@@ -1575,10 +1380,10 @@ jobs:
                 sw.stop();
 
                 final text = r.body.toLowerCase();
-                if (text.contains('"live"') || text.contains('approved') || text.contains('"charged":true')) {
+                if (text.contains('"live"')  text.contains('approved')  text.contains('"charged":true')) {
                   return CheckResult(status: CheckStatus.live, message: 'aprobada', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
                 }
-                if (text.contains('declined') || text.contains('"status":"fail"') || text.contains('invalid')) {
+                if (text.contains('declined')  text.contains('"status":"fail"')  text.contains('invalid')) {
                   return CheckResult(status: CheckStatus.dead, message: 'declinada', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
                 }
                 return CheckResult(
