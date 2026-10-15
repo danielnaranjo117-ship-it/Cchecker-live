@@ -3339,7 +3339,7 @@ jobs:
           final tabProvider = StateProvider<int>((ref) => 0);
           final binStatusProvider = StateProvider<BinStatus>((ref) => const BinStatus());
 
-          void refreshVaultScoped(Ref ref) {
+          void refreshVaultScoped(WidgetRef ref) {
             ref.invalidate(settingsProvider);
             ref.invalidate(cardsProvider);
             ref.invalidate(proxiesProvider);
