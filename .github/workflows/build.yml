@@ -21,7 +21,7 @@ jobs:
       - name: Preparar proyecto
         run: |
           set -e
-          echo "=== CCheker Live v6.0 ==="
+          echo "=== CCheker Live v6.1 ==="
           flutter create --org com.cchekerx --project-name ccheker_live --platforms android ccheker_live
           cd ccheker_live
           rm -rf lib test
@@ -72,7 +72,7 @@ jobs:
               bg = (int(lerp(9, 19, t)), int(lerp(13, 28, t)), int(lerp(24, 48, t)), 255)
               if shield(x, y, 1.0):
                   g = max(0.0, min(1.0, (y + 0.85) / 1.70))
-                  col = (int(lerp(182, 60, g)), int(lerp(255, 224, g)), int(lerp(60, 255, g)), 255)
+                  col = (int(lerp(182, 255, g)), int(lerp(255, 224, g)), int(lerp(60, 255, g)), 255)
                   if shield(x, y, 0.80):
                       col = bg
                       d = min(seg(x, y, -0.30, 0.00, -0.08, 0.24), seg(x, y, -0.08, 0.24, 0.32, -0.24))
@@ -152,6 +152,8 @@ jobs:
           sed -i -E 's/minSdk = flutter\.minSdkVersion/minSdk 23/' "$GR" || true
           sed -i -E 's/minSdkVersion 21/minSdkVersion 23/' "$GR" || true
           sed -i -E 's/minSdkVersion 19/minSdkVersion 23/' "$GR" || true
+          sed -i -E 's/compileSdkVersion flutter\.compileSdkVersion/compileSdkVersion 35/' "$GR" || true
+          sed -i -E 's/compileSdk = flutter\.compileSdkVersion/compileSdk 35/' "$GR" || true
           echo "android parcheado"
 
       - name: Escribir codigo
@@ -162,7 +164,7 @@ jobs:
           name: ccheker_live
           description: Checker masivo de tarjetas con boveda cifrada, cola por isolates y buscador de fuentes.
           publish_to: 'none'
-          version: 6.0.0+10
+          version: 6.1.0+11
 
           environment:
             sdk: '>=3.5.0 <4.0.0'
@@ -203,9 +205,9 @@ jobs:
           import 'dart:math';
 
           const appName = 'CCheker Live';
-          const appVersion = '6.0.0';
-          const appBuild = '6.0.0+10';
-          const appTag = 'v6.0';
+          const appVersion = '6.1.0';
+          const appBuild = '6.1.0+11';
+          const appTag = 'v6.1';
 
           const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
           const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
@@ -511,6 +513,7 @@ jobs:
             return BalanceRange(lo, hi, conf > 3 ? 3 : conf, nota.toString());
           }
           DART
+
           cat > lib/theme.dart <<'DART'
           import 'package:flutter/material.dart';
 
@@ -1785,7 +1788,7 @@ jobs:
                 ..connectionTimeout = Duration(seconds: cfg.timeoutSec)
                 ..idleTimeout = const Duration(seconds: 20)
                 ..maxConnectionsPerHost = 8
-                ..userAgent = 'CChekerLive/6.0';
+                ..userAgent = 'CChekerLive/6.1';
 
               if (p != null) {
                 hc.findProxy = (_) =>
@@ -1855,7 +1858,7 @@ jobs:
             Future<String> fetchText(String url, {Map<String, String>? headers, int maxBytes = 8388608}) async {
               final p = _pick();
               final req = http.Request('GET', Uri.parse(url))
-                ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android) CChekerLive/6.0'
+                ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android) CChekerLive/6.1'
                 ..headers['Accept'] = 'text/plain,text/html,application/json,*/*';
               if (headers != null) req.headers.addAll(headers);
 
@@ -1904,33 +1907,22 @@ jobs:
               CheckResult r(CheckStatus s, String m) =>
                   CheckResult(status: s, message: m, gateway: 'stripe', latencyMs: ms);
 
-              // 1) La tarjeta existe y autoriza, pero no le alcanza. SIGUE SIRVIENDO.
               if (decline == 'insufficient_funds' || code == 'insufficient_funds') return r(CheckStatus.noFunds, 'sin fondos');
-
-              // 2) Exige OTP. Viva, pero necesita 3DS.
               if (code == 'authentication_required' || decline == 'authentication_required') return r(CheckStatus.need3ds, 'pide 3ds');
-
-              // 3) PAN y fecha correctos, un dato mal. SIRVE en tiendas laxas.
               if (code == 'incorrect_cvc' || code == 'invalid_cvc') return r(CheckStatus.cvcFail, 'cvv incorrecto');
               if (code == 'incorrect_zip' || code == 'postal_code_invalid') return r(CheckStatus.avsFail, 'zip incorrecto');
-
-              // 4) Politica del emisor: no esta muerta, no la dejan pasar.
               if (code == 'restricted_card') return r(CheckStatus.restricted, 'restringida por el emisor');
               if (code == 'transaction_not_allowed') return r(CheckStatus.restricted, 'sin compras online');
               if (code == 'card_not_supported') return r(CheckStatus.restricted, 'tipo no soportado');
               if (code == 'currency_not_supported') return r(CheckStatus.restricted, 'moneda no soportada');
               if (decline == 'do_not_honor' || decline == 'generic_decline') return r(CheckStatus.restricted, 'emisor la bloquea');
               if (decline == 'no_such_issuer') return r(CheckStatus.dead, 'emisor inexistente');
-
-              // 5) Muertas de verdad.
               if (decline == 'lost_card') return r(CheckStatus.dead, 'reportada perdida');
               if (decline == 'stolen_card') return r(CheckStatus.dead, 'reportada robada');
               if (decline == 'pickup_card') return r(CheckStatus.dead, 'retenida pickup');
               if (code == 'expired_card') return r(CheckStatus.dead, 'vencida');
               if (code == 'incorrect_number' || code == 'invalid_number') return r(CheckStatus.dead, 'numero invalido');
               if (code == 'card_declined') return r(CheckStatus.dead, decline.isEmpty ? 'declinada' : decline);
-
-              // 6) Nada concluyente.
               if (code == 'processing_error') return r(CheckStatus.unknown, 'error de proceso');
               if (type == 'invalid_request_error' && msg.toLowerCase().contains('api key')) {
                 return r(CheckStatus.unknown, 'stripe key invalida');
@@ -1954,6 +1946,7 @@ jobs:
               if (s.contains('invalid') || s.contains('declin')) return r(CheckStatus.dead, 'declinada');
               return r(CheckStatus.unknown, 'sin clasificar');
             }
+
             Future<CheckResult> check(CreditCard card) async {
               final max = cfg.retries + 1;
               var attempt = 0;
@@ -2066,13 +2059,6 @@ jobs:
                   latencyMs: ms,
                   binRaw: binRaw,
                 );
-                }
-                return CheckResult(
-                  status: CheckStatus.unknown,
-                  message: resp.isEmpty ? 'sin estado (${r.statusCode})' : resp,
-                  gateway: 'dorkill',
-                  latencyMs: ms,
-                );
               } catch (_) {
                 sw.stop();
                 return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
@@ -2089,10 +2075,6 @@ jobs:
               if (a.status == CheckStatus.dead && b.status != CheckStatus.dead) return b;
               if (b.status == CheckStatus.dead && a.status != CheckStatus.dead) return a;
               return a.status.rank <= b.status.rank ? a : b;
-            }
-              if (a.status == CheckStatus.dead) return a;
-              if (b.status == CheckStatus.dead) return b;
-              return const CheckResult(status: CheckStatus.unknown, message: 'sin respuesta', gateway: 'cascada');
             }
           }
           DART
@@ -2819,7 +2801,6 @@ jobs:
           import 'import_engine.dart';
           import 'models.dart';
           import 'scraper.dart';
-          import 'value.dart';
 
           class FoundSource {
             FoundSource({
@@ -3147,6 +3128,7 @@ jobs:
           import 'import_engine.dart';
           import 'models.dart';
           import 'scraper.dart';
+          import 'value.dart';
 
           class CheckOutcome {
             CheckOutcome(this.name, this.ok, this.detail);
@@ -3324,6 +3306,8 @@ jobs:
                 final c = CreditCard(id: 'x', pan: '4111111111111111', expMonth: 1, expYear: 30, cvv: '123');
                 return !estimateBalance(c).known;
               });
+
+              t('base BIN vacia es inofensiva', () => BinDb.i.lookup('4111111111111111') == null);
 
               return out;
             }
@@ -4182,18 +4166,18 @@ jobs:
                       children: [
                         Expanded(
                           child: NeonButton(
-                            label: 'Copiar vivas',
+                            label: 'Copiar cobrables',
                             icon: Icons.copy_all,
                             onPressed: () async {
                               final txt = ref
                                   .read(cardsProvider)
-                                  .where((c) => c.status == CheckStatus.live)
+                                  .where((c) => c.status.cobrable)
                                   .map((c) => c.line)
                                   .join('\n');
                               if (txt.isEmpty) return;
                               await Clipboard.setData(ClipboardData(text: txt));
                               if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vivas copiadas')));
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cobrables copiadas')));
                               }
                             },
                           ),
@@ -4276,7 +4260,6 @@ jobs:
           import '../providers.dart';
           import '../repos.dart';
           import '../theme.dart';
-          import '../value.dart';
           import '../widgets.dart';
 
           class SetupScreen extends ConsumerStatefulWidget {
@@ -4686,6 +4669,7 @@ jobs:
           import '../providers.dart';
           import '../run_bar.dart';
           import '../theme.dart';
+          import '../value.dart';
           import '../widgets.dart';
 
           class VaultScreen extends ConsumerStatefulWidget {
@@ -4857,7 +4841,12 @@ jobs:
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   children: [
-                    _chip('todas', all.length, _filter == null, () => setState(() => _filter = null)),
+                    _chip('todas', all.length, _filter == null && !_onlyCobrable, () {
+                      setState(() {
+                        _filter = null;
+                        _onlyCobrable = false;
+                      });
+                    }),
                     _chip(
                       'cobrables',
                       all.where((c) => c.status.cobrable).length,
@@ -4885,7 +4874,7 @@ jobs:
                         border: Border.all(color: on ? AppColors.lime.withOpacity(0.5) : AppColors.glassStroke),
                       ),
                       child: Text(
-                        '$label $n',
+                        n == 0 ? label : '$label $n',
                         style: TextStyle(fontSize: 12, color: on ? AppColors.lime : AppColors.textMid),
                       ),
                     ),
@@ -4894,6 +4883,7 @@ jobs:
 
             Widget _tile(CreditCard c) {
               final sel = _sel.contains(c.id);
+              final est = estimateBalance(c);
 
               final color = switch (c.status) {
                 CheckStatus.live => AppColors.lime,
@@ -4907,7 +4897,6 @@ jobs:
                 CheckStatus.checking => AppColors.cyan,
                 CheckStatus.unchecked => AppColors.textLo,
               };
-              final est = estimateBalance(c);
 
               return CardRow(
                 selected: sel,
@@ -4976,7 +4965,8 @@ jobs:
             }
 
             void _detail(CreditCard c) {
-            final est = estimateBalance(c);
+              final est = estimateBalance(c);
+
               showModalBottomSheet<void>(
                 context: context,
                 backgroundColor: AppColors.bgElevated,
@@ -5361,8 +5351,6 @@ jobs:
               super.dispose();
             }
 
-            // Los sheets siguen construyendo sus campos durante la animacion de
-            // salida: si se liberan de golpe, revientan con "used after disposed".
             void _disposeLater(List<TextEditingController> cs) {
               Future<void>.delayed(const Duration(milliseconds: 350), () {
                 for (final c in cs) {
@@ -5991,7 +5979,6 @@ jobs:
           DART
 
           cat > lib/screens/analysis.dart <<'DART'
-          import '../value.dart';
           import 'dart:convert';
           import 'dart:io';
 
@@ -6006,6 +5993,7 @@ jobs:
           import '../models.dart';
           import '../providers.dart';
           import '../theme.dart';
+          import '../value.dart';
           import '../widgets.dart';
 
           class AnalysisScreen extends ConsumerStatefulWidget {
@@ -6145,6 +6133,7 @@ jobs:
                       StatCard(label: 'sin revisar', value: fmtInt(unchecked), color: AppColors.textMid),
                     ],
                   ),
+                  const SizedBox(height: 10),
                   Row(
                     children: [
                       StatCard(label: 'cobrables', value: fmtInt(cobrables), color: AppColors.amber),
@@ -6723,7 +6712,7 @@ jobs:
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'Verifica Luhn, parser, generador, HTML, red y motor. Si algo falla, sale en rojo.',
+                          'Verifica Luhn, parser, generador, HTML, mapeo de declives, estimador de saldo, red y motor. Si algo falla, sale en rojo.',
                           style: AppTextStyles.caption,
                         ),
                         const SizedBox(height: 12),
@@ -7124,5 +7113,5 @@ jobs:
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
-          name: ccheker-live-v6-0
+          name: ccheker-live-v6-1
           path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
