@@ -21,7 +21,7 @@ jobs:
       - name: Preparar proyecto
         run: |
           set -e
-          echo "=== CCheker Live v6.1 ==="
+          echo "=== CCheker Live v6.4 ==="
           flutter create --org com.cchekerx --project-name ccheker_live --platforms android ccheker_live
           cd ccheker_live
           rm -rf lib test
@@ -201,372 +201,315 @@ jobs:
               depend_on_referenced_packages: false
           YAML
 
-          cat > lib/models.dart <<'DART'
-          import 'core.dart';
+          cat > lib/core.dart <<'DART'
+          import 'dart:math';
 
-          // Ordenado por utilidad: lo cobrable primero.
-          enum CheckStatus {
-            live,
-            noFunds,
-            cvcFail,
-            avsFail,
-            need3ds,
-            restricted,
-            unknown,
-            dead,
-            checking,
-            unchecked,
+          const appName = 'CCheker Live';
+          const appVersion = '6.4.0';
+          const appBuild = '6.4.0+14';
+          const appTag = 'v6.4';
+
+          const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
+          const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
+          const stripePmUrl = 'https://api.stripe.com/v1/payment_methods';
+          const stripePiUrl = 'https://api.stripe.com/v1/payment_intents';
+          const dorkillUrl = 'https://www.dorkill.com/api/check';
+          const binlistUrl = 'https://lookup.binlist.net/';
+          const defaultProbe = 'https://www.google.com/generate_204';
+
+          final _onlyDigits = RegExp(r'\D');
+          final _allDigits = RegExp(r'^\d+$');
+          final _alpha = RegExp(r'[A-Za-z]');
+
+          String digitsOf(String s) => s.replaceAll(_onlyDigits, '');
+          bool isDigits(String s) => s.isNotEmpty && _allDigits.hasMatch(s);
+          bool hasAlpha(String s) => _alpha.hasMatch(s);
+
+          String newId() {
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            final r = Random.secure();
+            return List.generate(12, (_) => chars[r.nextInt(chars.length)]).join();
           }
 
-          extension CheckStatusX on CheckStatus {
-            String get label => switch (this) {
-                  CheckStatus.live => 'viva',
-                  CheckStatus.noFunds => 'sin fondos',
-                  CheckStatus.cvcFail => 'cvv malo',
-                  CheckStatus.avsFail => 'zip malo',
-                  CheckStatus.need3ds => 'pide 3ds',
-                  CheckStatus.restricted => 'restringida',
-                  CheckStatus.unknown => 'incierta',
-                  CheckStatus.dead => 'muerta',
-                  CheckStatus.checking => 'revisando',
-                  CheckStatus.unchecked => 'sin revisar',
-                };
-
-            /// La tarjeta existe y autoriza, aunque falle un dato o no tenga plata.
-            bool get cobrable =>
-                this == CheckStatus.live ||
-                this == CheckStatus.noFunds ||
-                this == CheckStatus.cvcFail ||
-                this == CheckStatus.avsFail;
-
-            /// Prioridad de ataque: menor = mas vale la pena.
-            int get rank => switch (this) {
-                  CheckStatus.live => 0,
-                  CheckStatus.noFunds => 1,
-                  CheckStatus.cvcFail => 2,
-                  CheckStatus.avsFail => 3,
-                  CheckStatus.need3ds => 4,
-                  CheckStatus.restricted => 5,
-                  CheckStatus.unknown => 6,
-                  CheckStatus.checking => 7,
-                  CheckStatus.unchecked => 8,
-                  CheckStatus.dead => 9,
-                };
+          String maskPan(String pan) {
+            if (pan.length <= 10) return pan;
+            return '${pan.substring(0, 6)}******${pan.substring(pan.length - 4)}';
           }
 
-          class CreditCard {
-            CreditCard({
-              required this.id,
-              required this.pan,
-              required this.expMonth,
-              required this.expYear,
-              required this.cvv,
-              this.brand = '',
-              this.bank = '',
-              this.country = '',
-              this.cardType = '',
-              this.level = '',
-              this.status = CheckStatus.unchecked,
-              this.message = '',
-              this.gateway = '',
-              this.latencyMs = 0,
-              this.checkedAt,
-              this.bin = '',
-            });
-
-            final String id;
-            final String pan;
-            final int expMonth;
-            final int expYear;
-            final String cvv;
-            final String brand;
-            final String bank;
-            final String country;
-            final String cardType;
-            final String level;
-            final CheckStatus status;
-            final String message;
-            final String gateway;
-            final int latencyMs;
-            final DateTime? checkedAt;
-            final String bin;
-
-            bool get expired => isExpired(expMonth, expYear);
-            String get expLabel => '${expMonth.toString().padLeft(2, '0')}/${expYear.toString().padLeft(2, '0')}';
-            String get expLabel4 => '${expMonth.toString().padLeft(2, '0')}/${year4(expYear)}';
-            String get line => '$pan|${expMonth.toString().padLeft(2, '0')}|${expYear.toString().padLeft(2, '0')}|$cvv';
-
-            CreditCard copyWith({
-              String? pan,
-              int? expMonth,
-              int? expYear,
-              String? cvv,
-              String? brand,
-              String? bank,
-              String? country,
-              String? cardType,
-              String? level,
-              CheckStatus? status,
-              String? message,
-              String? gateway,
-              int? latencyMs,
-              DateTime? checkedAt,
-              String? bin,
-            }) =>
-                CreditCard(
-                  id: id,
-                  pan: pan ?? this.pan,
-                  expMonth: expMonth ?? this.expMonth,
-                  expYear: expYear ?? this.expYear,
-                  cvv: cvv ?? this.cvv,
-                  brand: brand ?? this.brand,
-                  bank: bank ?? this.bank,
-                  country: country ?? this.country,
-                  cardType: cardType ?? this.cardType,
-                  level: level ?? this.level,
-                  status: status ?? this.status,
-                  message: message ?? this.message,
-                  gateway: gateway ?? this.gateway,
-                  latencyMs: latencyMs ?? this.latencyMs,
-                  checkedAt: checkedAt ?? this.checkedAt,
-                  bin: bin ?? this.bin,
-                );
-
-            Map<String, dynamic> toJson() => {
-                  'id': id,
-                  'pan': pan,
-                  'm': expMonth,
-                  'y': expYear,
-                  'cvv': cvv,
-                  'brand': brand,
-                  'bank': bank,
-                  'country': country,
-                  'type': cardType,
-                  'level': level,
-                  'status': status.name,
-                  'msg': message,
-                  'gw': gateway,
-                  'ms': latencyMs,
-                  'at': checkedAt?.toIso8601String(),
-                  'bin': bin,
-                };
-
-            static CreditCard fromJson(Map<String, dynamic> j) => CreditCard(
-                  id: j['id'] as String,
-                  pan: j['pan'] as String,
-                  expMonth: (j['m'] as num).toInt(),
-                  expYear: (j['y'] as num).toInt(),
-                  cvv: (j['cvv'] ?? '').toString(),
-                  brand: (j['brand'] ?? '').toString(),
-                  bank: (j['bank'] ?? '').toString(),
-                  country: (j['country'] ?? '').toString(),
-                  cardType: (j['type'] ?? '').toString(),
-                  level: (j['level'] ?? '').toString(),
-                  status: CheckStatus.values.firstWhere((s) => s.name == j['status'], orElse: () => CheckStatus.unchecked),
-                  message: (j['msg'] ?? '').toString(),
-                  gateway: (j['gw'] ?? '').toString(),
-                  latencyMs: ((j['ms'] ?? 0) as num).toInt(),
-                  checkedAt: j['at'] == null ? null : DateTime.tryParse(j['at'] as String),
-                  bin: (j['bin'] ?? '').toString(),
-                );
+          String fmtInt(int n) {
+            final s = n.abs().toString();
+            final b = StringBuffer();
+            for (var i = 0; i < s.length; i++) {
+              if (i > 0 && (s.length - i) % 3 == 0) b.write('.');
+              b.write(s[i]);
+            }
+            return '${n < 0 ? '-' : ''}$b';
           }
 
-          class BinInfo {
-            const BinInfo({this.bank = '', this.country = '', this.cardType = '', this.level = ''});
-            final String bank;
-            final String country;
-            final String cardType;
-            final String level;
+          String fmtPct(double v) => '${(v * 100).toStringAsFixed(1)}%';
 
-            Map<String, dynamic> toJson() => {'b': bank, 'c': country, 't': cardType, 'l': level};
-
-            static BinInfo fromJson(Map<String, dynamic> j) => BinInfo(
-                  bank: (j['b'] ?? '').toString(),
-                  country: (j['c'] ?? '').toString(),
-                  cardType: (j['t'] ?? '').toString(),
-                  level: (j['l'] ?? '').toString(),
-                );
+          String fmtSecs(int s) {
+            if (s < 60) return '${s}s';
+            final m = s ~/ 60;
+            final r = s % 60;
+            return '${m}m ${r}s';
           }
 
-          enum ProxyKind { http, socks5 }
+          String year4(int yy) => yy >= 100 ? '$yy' : '${2000 + yy}';
 
-          enum ProxyHealth { unknown, up, down }
-
-          class ProxyNode {
-            ProxyNode({
-              required this.id,
-              required this.host,
-              required this.port,
-              this.user = '',
-              this.pass = '',
-              this.kind = ProxyKind.http,
-              this.health = ProxyHealth.unknown,
-              this.latencyMs = 0,
-            });
-
-            final String id;
-            final String host;
-            final int port;
-            final String user;
-            final String pass;
-            final ProxyKind kind;
-            ProxyHealth health;
-            int latencyMs;
-
-            String get label => '$host:$port';
-
-            Map<String, dynamic> toJson() => {
-                  'id': id,
-                  'host': host,
-                  'port': port,
-                  'u': user,
-                  'p': pass,
-                  'k': kind.name,
-                  'h': health.name,
-                  'ms': latencyMs,
-                };
-
-            static ProxyNode fromJson(Map<String, dynamic> j) => ProxyNode(
-                  id: j['id'] as String,
-                  host: j['host'] as String,
-                  port: (j['port'] as num).toInt(),
-                  user: (j['u'] ?? '').toString(),
-                  pass: (j['p'] ?? '').toString(),
-                  kind: ProxyKind.values.firstWhere((k) => k.name == j['k'], orElse: () => ProxyKind.http),
-                  health: ProxyHealth.values.firstWhere((h) => h.name == j['h'], orElse: () => ProxyHealth.unknown),
-                  latencyMs: ((j['ms'] ?? 0) as num).toInt(),
-                );
+          int luhnSum(String pan) {
+            var sum = 0;
+            var alt = false;
+            for (var i = pan.length - 1; i >= 0; i--) {
+              var d = pan.codeUnitAt(i) - 48;
+              if (d < 0 || d > 9) return -1;
+              if (alt) {
+                d *= 2;
+                if (d > 9) d -= 9;
+              }
+              sum += d;
+              alt = !alt;
+            }
+            return sum;
           }
 
-          class ImportResult {
-            ImportResult({required this.cards, this.duplicates = 0, this.junk = 0, this.fixed = 0, this.expired = 0});
-            final List<CreditCard> cards;
-            final int duplicates;
-            final int junk;
-            final int fixed;
-            final int expired;
+          bool luhn(String pan) {
+            if (pan.length < 12 || pan.length > 19) return false;
+            final s = luhnSum(pan);
+            return s > 0 && s % 10 == 0;
           }
 
-          class Settings {
-            const Settings({
-              this.engine = 'stripe',
-              this.stripeKey = stripePk,
-              this.stripeSk = '',
-              this.dorkillKey = '',
-              this.retries = 1,
-              this.useProxies = false,
-              this.autoTune = true,
-              this.doh = true,
-              this.proxySticky = false,
-              this.concurrency = 6,
-              this.timeoutSec = 20,
-              this.probeUrl = defaultProbe,
-              this.biometrics = false,
-              this.autoLockMin = 5,
-              this.offlineDb = false,
-            });
-
-            final String engine;
-            final String stripeKey;
-            final String stripeSk;
-            final String dorkillKey;
-            final int retries;
-            final bool useProxies;
-            final bool autoTune;
-            final bool doh;
-            final bool proxySticky;
-            final int concurrency;
-            final int timeoutSec;
-            final String probeUrl;
-            final bool biometrics;
-            final int autoLockMin;
-            final bool offlineDb;
-
-            Settings copyWith({
-              String? engine,
-              String? stripeKey,
-              String? stripeSk,
-              String? dorkillKey,
-              int? retries,
-              bool? useProxies,
-              bool? autoTune,
-              bool? doh,
-              bool? proxySticky,
-              int? concurrency,
-              int? timeoutSec,
-              String? probeUrl,
-              bool? biometrics,
-              int? autoLockMin,
-              bool? offlineDb,
-            }) =>
-                Settings(
-                  engine: engine ?? this.engine,
-                  stripeKey: stripeKey ?? this.stripeKey,
-                  stripeSk: stripeSk ?? this.stripeSk,
-                  dorkillKey: dorkillKey ?? this.dorkillKey,
-                  retries: retries ?? this.retries,
-                  useProxies: useProxies ?? this.useProxies,
-                  autoTune: autoTune ?? this.autoTune,
-                  doh: doh ?? this.doh,
-                  proxySticky: proxySticky ?? this.proxySticky,
-                  concurrency: concurrency ?? this.concurrency,
-                  timeoutSec: timeoutSec ?? this.timeoutSec,
-                  probeUrl: probeUrl ?? this.probeUrl,
-                  biometrics: biometrics ?? this.biometrics,
-                  autoLockMin: autoLockMin ?? this.autoLockMin,
-                  offlineDb: offlineDb ?? this.offlineDb,
-                );
-
-            Map<String, dynamic> toJson() => {
-                  'engine': engine,
-                  'skey': stripeKey,
-                  'ssk': stripeSk,
-                  'dkey': dorkillKey,
-                  'retries': retries,
-                  'useProxies': useProxies,
-                  'autoTune': autoTune,
-                  'doh': doh,
-                  'proxySticky': proxySticky,
-                  'concurrency': concurrency,
-                  'timeout': timeoutSec,
-                  'probe': probeUrl,
-                  'bio': biometrics,
-                  'lock': autoLockMin,
-                  'offline': offlineDb,
-                };
-
-            static Settings fromJson(Map<String, dynamic> j) => Settings(
-                  engine: (j['engine'] ?? 'stripe').toString(),
-                  stripeKey: (j['skey'] ?? stripePk).toString(),
-                  stripeSk: (j['ssk'] ?? '').toString(),
-                  dorkillKey: (j['dkey'] ?? '').toString(),
-                  retries: ((j['retries'] ?? 1) as num).toInt(),
-                  useProxies: (j['useProxies'] ?? false) as bool,
-                  autoTune: (j['autoTune'] ?? true) as bool,
-                  doh: (j['doh'] ?? true) as bool,
-                  proxySticky: (j['proxySticky'] ?? false) as bool,
-                  concurrency: ((j['concurrency'] ?? 6) as num).toInt(),
-                  timeoutSec: ((j['timeout'] ?? 20) as num).toInt(),
-                  probeUrl: (j['probe'] ?? defaultProbe).toString(),
-                  biometrics: (j['bio'] ?? false) as bool,
-                  autoLockMin: ((j['lock'] ?? 5) as num).toInt(),
-                  offlineDb: (j['offline'] ?? false) as bool,
-                );
+          String fixLuhn(String pan) {
+            if (pan.length < 2) return pan;
+            final body = pan.substring(0, pan.length - 1);
+            for (var d = 0; d <= 9; d++) {
+              final cand = '$body$d';
+              if (luhn(cand)) return cand;
+            }
+            return pan;
           }
 
-          class BinStatus {
-            const BinStatus({this.installed = false, this.busy = false, this.count = 0, this.note = ''});
-            final bool installed;
-            final bool busy;
-            final int count;
+          String completeLuhn(String partial) {
+            var sum = 0;
+            var alt = true;
+            for (var i = partial.length - 1; i >= 0; i--) {
+              var d = partial.codeUnitAt(i) - 48;
+              if (d < 0 || d > 9) return partial;
+              if (alt) {
+                d *= 2;
+                if (d > 9) d -= 9;
+              }
+              sum += d;
+              alt = !alt;
+            }
+            return '$partial${(10 - (sum % 10)) % 10}';
+          }
+
+          String schemeOf(String pan) {
+            if (pan.isEmpty) return '';
+            if (pan.startsWith('4')) return 'visa';
+            final two = pan.length >= 2 ? int.tryParse(pan.substring(0, 2)) ?? 0 : 0;
+            final three = pan.length >= 3 ? int.tryParse(pan.substring(0, 3)) ?? 0 : 0;
+            final four = pan.length >= 4 ? int.tryParse(pan.substring(0, 4)) ?? 0 : 0;
+            if (two >= 51 && two <= 55) return 'mastercard';
+            if (four >= 2221 && four <= 2720) return 'mastercard';
+            if (three >= 300 && three <= 305) return 'diners';
+            if (two == 36 || two == 38 || two == 39) return 'diners';
+            if (four == 6011 || three == 65 || (three >= 644 && three <= 649)) return 'discover';
+            if (four >= 3528 && four <= 3589) return 'jcb';
+            if (two == 34 || two == 37) return 'amex';
+            if (two == 62) return 'unionpay';
+            return 'otra';
+          }
+
+          const schemeNames = {
+            'visa': 'Visa',
+            'mastercard': 'Mastercard',
+            'amex': 'Amex',
+            'discover': 'Discover',
+            'jcb': 'JCB',
+            'diners': 'Diners',
+            'unionpay': 'UnionPay',
+            'otra': 'Otra',
+          };
+
+          const countryNames = {
+            'US': 'Estados Unidos',
+            'VE': 'Venezuela',
+            'CO': 'Colombia',
+            'BR': 'Brasil',
+            'MX': 'Mexico',
+            'AR': 'Argentina',
+            'CL': 'Chile',
+            'PE': 'Peru',
+            'ES': 'Espana',
+            'GB': 'Reino Unido',
+            'CA': 'Canada',
+            'DE': 'Alemania',
+            'FR': 'Francia',
+            'IT': 'Italia',
+            'JP': 'Japon',
+            'CN': 'China',
+            'IN': 'India',
+            'RU': 'Rusia',
+            'TR': 'Turquia',
+            'PA': 'Panama',
+          };
+
+          String flagEmoji(String cc) {
+            if (cc.length != 2) return '';
+            const base = 0x1F1E6;
+            final a = cc.toUpperCase().codeUnitAt(0) - 65;
+            final b = cc.toUpperCase().codeUnitAt(1) - 65;
+            if (a < 0 || a > 25 || b < 0 || b > 25) return '';
+            return String.fromCharCodes([base + a, base + b]);
+          }
+
+          bool isExpired(int mm, int yy) {
+            final now = DateTime.now();
+            final curY = now.year % 100;
+            if (yy > curY) return false;
+            if (yy < curY) return true;
+            return mm < now.month;
+          }
+          DART
+
+          cat > lib/value.dart <<'DART'
+          import 'models.dart';
+
+          /// Estimacion del saldo disponible. NO es el saldo real: es un rango
+          /// inferido del tipo, nivel y pais del BIN. Sirve para decidir si vale
+          /// la pena vaciar la tarjeta antes de gastar un request en ella.
+          class BalanceRange {
+            const BalanceRange(this.min, this.max, this.confidence, this.note);
+
+            final int min;
+            final int max;
+            final int confidence;
             final String note;
 
-            BinStatus copyWith({bool? installed, bool? busy, int? count, String? note}) => BinStatus(
-                  installed: installed ?? this.installed,
-                  busy: busy ?? this.busy,
-                  count: count ?? this.count,
-                  note: note ?? this.note,
-                );
+            bool get known => max > 0;
+            String get label => known ? '\$${_k(min)} - \$${_k(max)}' : 'sin estimar';
+            String get short => known ? '\$${_k(min)}-${_k(max)}' : '?';
+            String get confLabel => switch (confidence) {
+                  3 => 'alta',
+                  2 => 'media',
+                  1 => 'baja',
+                  _ => 'sin datos',
+                };
+
+            String get plan => known ? 'valida con \$1, luego intenta \$${_k(max)}' : 'valida con \$1 y sube segun respuesta';
+
+            static String _k(int n) {
+              if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+              if (n >= 1000) {
+                final k = n / 1000;
+                return k == k.roundToDouble() ? '${k.round()}k' : '${k.toStringAsFixed(1)}k';
+              }
+              return '$n';
+            }
+          }
+
+          const _tipoBase = <String, (int, int)>{
+            'prepaid': (5, 120),
+            'debit': (80, 1200),
+            'credit': (300, 3000),
+            'charge': (1500, 20000),
+          };
+
+          const _nivelMult = <String, double>{
+            'classic': 1.0,
+            'standard': 1.0,
+            'titanium': 2.0,
+            'gold': 2.5,
+            'platinum': 3.5,
+            'signature': 5.0,
+            'world': 4.5,
+            'world elite': 6.0,
+            'infinite': 10.0,
+            'business': 8.0,
+            'corporate': 8.0,
+            'commercial': 8.0,
+          };
+
+          const _paisMult = <String, double>{
+            'US': 1.0,
+            'CA': 0.95,
+            'GB': 0.9,
+            'AU': 0.9,
+            'NZ': 0.85,
+            'DE': 0.85,
+            'NL': 0.85,
+            'SE': 0.85,
+            'CH': 0.95,
+            'FR': 0.8,
+            'AE': 0.8,
+            'SA': 0.8,
+            'IT': 0.75,
+            'ES': 0.75,
+            'MX': 0.6,
+            'CL': 0.6,
+            'BR': 0.55,
+            'CO': 0.5,
+            'PE': 0.5,
+            'AR': 0.45,
+            'VE': 0.4,
+            'IN': 0.4,
+            'TR': 0.4,
+            'ID': 0.4,
+            'PH': 0.4,
+          };
+
+          const paisesDuros = <String>{'BR', 'IN', 'TR', 'MX', 'CO', 'AR', 'ID', 'PH', 'VN', 'NG'};
+
+          BalanceRange estimateBalance(CreditCard c) {
+            final tipo = c.cardType.toLowerCase().trim();
+            final nivel = c.level.toLowerCase().trim();
+            final pais = c.country.toUpperCase().trim();
+
+            final base = _tipoBase[tipo];
+            if (base == null && nivel.isEmpty) {
+              return const BalanceRange(0, 0, 0, 'Falta enriquecer el BIN: sin tipo ni nivel no hay rango.');
+            }
+
+            var lo = base?.$1 ?? 150;
+            var hi = base?.$2 ?? 2000;
+            var conf = 1;
+            if (base != null) conf++;
+            if (pais.isNotEmpty) conf++;
+
+            if (tipo == 'prepaid') {
+              hi = hi < 120 ? hi : 120;
+            } else {
+              var mult = 1.0;
+              for (final e in _nivelMult.entries) {
+                if (nivel.contains(e.key) && e.value > mult) mult = e.value;
+              }
+              if (mult > 1) {
+                lo = (lo * mult).round();
+                hi = (hi * mult).round();
+                conf++;
+              }
+            }
+
+            if (c.brand == 'amex' && tipo != 'prepaid') {
+              if (lo < 1500) lo = 1500;
+              if (hi < 20000) hi = 20000;
+            }
+
+            final pm = _paisMult[pais] ?? 0.7;
+            lo = (lo * pm).round();
+            hi = (hi * pm).round();
+
+            if (lo < 5) lo = 5;
+            if (hi < lo) hi = lo;
+
+            final nota = StringBuffer('Base: ${tipo.isEmpty ? 'desconocido' : tipo}');
+            if (nivel.isNotEmpty) nota.write(' · nivel $nivel');
+            nota.write(pais.isEmpty ? ' · pais desconocido' : ' · $pais');
+            if (paisesDuros.contains(pais)) nota.write(' · 3DS fuerte');
+
+            return BalanceRange(lo, hi, conf > 3 ? 3 : conf, nota.toString());
           }
           DART
 
@@ -1048,14 +991,12 @@ jobs:
                   CheckStatus.unchecked => 'sin revisar',
                 };
 
-            /// La tarjeta existe y autoriza, aunque falle un dato o no tenga plata.
             bool get cobrable =>
                 this == CheckStatus.live ||
                 this == CheckStatus.noFunds ||
                 this == CheckStatus.cvcFail ||
                 this == CheckStatus.avsFail;
 
-            /// Prioridad de ataque: menor = mas vale la pena.
             int get rank => switch (this) {
                   CheckStatus.live => 0,
                   CheckStatus.noFunds => 1,
@@ -1264,9 +1205,6 @@ jobs:
           }
 
           class Settings {
-            const Settings({
-              this.engine = 'stripe',
-              this.stripeKey class Settings {
             const Settings({
               this.engine = 'stripe',
               this.stripeKey = stripePk,
@@ -3597,9 +3535,9 @@ jobs:
                   timeoutSec: cfg.timeoutSec,
                 );
                 final head = raw.split('\n').first;
-                out.add(CheckOutcome('stripe crudo (sin DoH)', head.contains('HTTP 200'), head));
+                out.add(CheckOutcome('stripe crudo', head.contains('HTTP 200'), head));
               } catch (e) {
-                out.add(CheckOutcome('stripe crudo (sin DoH)', false, '$e'));
+                out.add(CheckOutcome('stripe crudo', false, '$e'));
               }
 
               engine.dispose();
@@ -7421,13 +7359,12 @@ jobs:
                 );
           }
           DART
+
       - name: Compilar
         run: |
           cd ccheker_live
           flutter pub get
 
-          # AGP 8 exige namespace en cada modulo: se inyecta en los plugins que
-          # todavia no lo declaran, tomandolo de su propio AndroidManifest.
           for g in $(find ~/.pub-cache/hosted/pub.dev -maxdepth 3 -name build.gradle -path "*/android/*"); do
             grep -q "namespace" "$g" && continue
             man="$(dirname "$g")/src/main/AndroidManifest.xml"
@@ -7443,5 +7380,5 @@ jobs:
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
-          name: ccheker-live-v6-1
+          name: ccheker-live-v6-4
           path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
