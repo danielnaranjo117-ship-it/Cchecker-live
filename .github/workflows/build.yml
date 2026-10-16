@@ -164,7 +164,7 @@ jobs:
           name: ccheker_live
           description: Checker masivo de tarjetas con boveda cifrada, cola por isolates y buscador de fuentes.
           publish_to: 'none'
-          version: 6.1.0+11
+          version: 6.2.0+12
 
           environment:
             sdk: '>=3.5.0 <4.0.0'
@@ -205,9 +205,9 @@ jobs:
           import 'dart:math';
 
           const appName = 'CCheker Live';
-          const appVersion = '6.1.0';
-          const appBuild = '6.1.0+11';
-          const appTag = 'v6.1';
+          const appVersion = '6.2.0';
+          const appBuild = '6.2.0+12';
+          const appTag = 'v6.2';
 
           const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
           const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
@@ -1747,6 +1747,32 @@ jobs:
           import 'models.dart';
           import 'net.dart';
 
+          /// Fabrica de conexiones con DNS por HTTPS. Es top-level para que
+          /// tambien la use la prueba cruda.
+          Future<ConnectionTask<Socket>> dohFactory(Uri uri, String? proxyHost, int? proxyPort, int timeoutSec) async {
+            final t = Duration(seconds: timeoutSec);
+
+            var target = uri.host;
+            if (InternetAddress.tryParse(target) == null) {
+              try {
+                final ips = await NetSense.i.resolve(target);
+                if (ips.isNotEmpty) target = ips.first;
+              } catch (_) {}
+            }
+
+            Socket raw;
+            try {
+              raw = await Socket.connect(target, uri.port, timeout: t);
+            } catch (_) {
+              if (target == uri.host) rethrow;
+              raw = await Socket.connect(uri.host, uri.port, timeout: t);
+            }
+
+            final Socket sock = uri.isScheme('https') ? await SecureSocket.secure(raw, host: uri.host) : raw;
+
+            return ConnectionTask.fromSocket<Socket>(Future<Socket>.value(sock), sock.destroy);
+          }
+
           class ProbeResult {
             const ProbeResult({required this.ok, required this.ms});
             final bool ok;
@@ -1778,17 +1804,20 @@ jobs:
 
             List<ProxyNode> get proxies => _proxies;
 
+            static const _ua = 'CChekerLive/6.2';
+
+            HttpClient _bare() => HttpClient()
+              ..connectionTimeout = Duration(seconds: cfg.timeoutSec)
+              ..idleTimeout = const Duration(seconds: 20)
+              ..userAgent = _ua;
+
             http.Client _client(ProxyNode? p) {
               final key = p == null ? 'direct' : '${p.kind.name}|${p.host}:${p.port}';
 
               final cached = _clients[key];
               if (cached != null) return cached;
 
-              final hc = HttpClient()
-                ..connectionTimeout = Duration(seconds: cfg.timeoutSec)
-                ..idleTimeout = const Duration(seconds: 20)
-                ..maxConnectionsPerHost = 8
-                ..userAgent = 'CChekerLive/6.1';
+              final hc = _bare()..maxConnectionsPerHost = 8;
 
               if (p != null) {
                 hc.findProxy = (_) =>
@@ -1807,36 +1836,12 @@ jobs:
                   };
                 }
               } else if (cfg.doh) {
-                hc.connectionFactory = _viaDoh;
+                hc.connectionFactory = (u, ph, pp) => dohFactory(u, ph, pp, cfg.timeoutSec);
               }
 
               final c = IOClient(hc);
               _clients[key] = c;
               return c;
-            }
-
-            Future<ConnectionTask<Socket>> _viaDoh(Uri uri, String? proxyHost, int? proxyPort) async {
-              final t = Duration(seconds: cfg.timeoutSec);
-
-              var target = uri.host;
-              if (InternetAddress.tryParse(target) == null) {
-                try {
-                  final ips = await NetSense.i.resolve(target);
-                  if (ips.isNotEmpty) target = ips.first;
-                } catch (_) {}
-              }
-
-              Socket raw;
-              try {
-                raw = await Socket.connect(target, uri.port, timeout: t);
-              } catch (_) {
-                if (target == uri.host) rethrow;
-                raw = await Socket.connect(uri.host, uri.port, timeout: t);
-              }
-
-              final Socket sock = uri.isScheme('https') ? await SecureSocket.secure(raw, host: uri.host) : raw;
-
-              return ConnectionTask.fromSocket<Socket>(Future<Socket>.value(sock), sock.destroy);
             }
 
             void dispose() {
@@ -1855,10 +1860,15 @@ jobs:
 
             String get _sk => cfg.stripeKey.isEmpty ? stripePk : cfg.stripeKey;
 
+            static String maskKey(String k) {
+              if (k.length < 18) return k;
+              return '${k.substring(0, 14)}...${k.substring(k.length - 4)}';
+            }
+
             Future<String> fetchText(String url, {Map<String, String>? headers, int maxBytes = 8388608}) async {
               final p = _pick();
               final req = http.Request('GET', Uri.parse(url))
-                ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android) CChekerLive/6.1'
+                ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android) CChekerLive/6.2'
                 ..headers['Accept'] = 'text/plain,text/html,application/json,*/*';
               if (headers != null) req.headers.addAll(headers);
 
@@ -1894,6 +1904,50 @@ jobs:
                 return (jsonDecode(r.body) as Map<String, dynamic>)['ip'] as String?;
               } catch (_) {
                 return null;
+              }
+            }
+
+            /// Prueba cruda: dispara un token con la tarjeta de prueba y devuelve
+            /// el HTTP y el cuerpo tal cual, para saber exactamente que falla.
+            static Future<String> probeRaw({
+              required String key,
+              required bool doh,
+              required int timeoutSec,
+            }) async {
+              final sw = Stopwatch()..start();
+              HttpClient? hc;
+              IOClient? client;
+              try {
+                hc = HttpClient()
+                  ..connectionTimeout = Duration(seconds: timeoutSec)
+                  ..idleTimeout = const Duration(seconds: 10)
+                  ..userAgent = _ua;
+                if (doh) hc.connectionFactory = (u, ph, pp) => dohFactory(u, ph, pp, timeoutSec);
+                client = IOClient(hc);
+
+                final r = await client
+                    .post(
+                      Uri.parse(stripeTokenUrl),
+                      headers: {
+                        'Authorization': 'Bearer $key',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                      },
+                      body: {
+                        'card[number]': '4242424242424242',
+                        'card[exp_month]': '12',
+                        'card[exp_year]': '2030',
+                        'card[cvc]': '123',
+                      },
+                    )
+                    .timeout(Duration(seconds: timeoutSec));
+
+                final b = r.body.length > 220 ? '${r.body.substring(0, 220)}...' : r.body;
+                return 'DoH ${doh ? 'ON' : 'OFF'} · HTTP ${r.statusCode} · ${sw.elapsedMilliseconds}ms\n$b';
+              } catch (e) {
+                return 'DoH ${doh ? 'ON' : 'OFF'} · FALLO en ${sw.elapsedMilliseconds}ms\n$e';
+              } finally {
+                client?.close();
+                hc?.close(force: true);
               }
             }
 
@@ -1947,11 +2001,13 @@ jobs:
               return r(CheckStatus.unknown, 'sin clasificar');
             }
 
+            /// Ahora conserva el motivo real del ultimo intento en vez de
+            /// devolver siempre 'sin respuesta'.
             Future<CheckResult> check(CreditCard card) async {
               final max = cfg.retries + 1;
-              var attempt = 0;
+              var last = const CheckResult(status: CheckStatus.unknown, message: 'sin intentos');
 
-              while (attempt < max) {
+              for (var attempt = 0; attempt < max; attempt++) {
                 final p = _pick();
                 final r = cfg.engine == 'both'
                     ? await _cascade(card, p)
@@ -1959,19 +2015,37 @@ jobs:
                         ? await _dorkill(card, p)
                         : await _stripe(card, p);
 
+                last = r;
                 if (r.status != CheckStatus.unknown) return r;
-
-                attempt++;
-                if (attempt < max) await Future.delayed(Duration(milliseconds: NetSense.i.backoff(attempt)));
+                if (attempt + 1 < max) {
+                  await Future.delayed(Duration(milliseconds: NetSense.i.backoff(attempt + 1)));
+                }
               }
 
-              return const CheckResult(status: CheckStatus.unknown, message: 'sin respuesta');
+              return last;
             }
 
             Future<CheckResult> _stripe(CreditCard card, ProxyNode? p) async {
+              final a = await _stripeWith(_client(p), card);
+
+              // Si fallo de red y tenemos DoH puesto, reintenta sin DoH.
+              if (a.message == 'red' && cfg.doh && p == null) {
+                final raw = IOClient(_bare());
+                try {
+                  final b = await _stripeWith(raw, card);
+                  if (b.status != CheckStatus.unknown) return b;
+                } finally {
+                  raw.close();
+                }
+              }
+
+              return a;
+            }
+
+            Future<CheckResult> _stripeWith(http.Client client, CreditCard card) async {
               final sw = Stopwatch()..start();
               try {
-                final r = await _client(p)
+                final r = await client
                     .post(
                       Uri.parse(stripeTokenUrl),
                       headers: {
@@ -2002,10 +2076,41 @@ jobs:
                   );
                 }
 
+                // Motivos explicitos, con el codigo a la vista.
+                if (r.statusCode == 401 || r.statusCode == 403) {
+                  return CheckResult(
+                    status: CheckStatus.unknown,
+                    message: 'key rechazada (${r.statusCode})',
+                    gateway: 'stripe',
+                    latencyMs: ms,
+                  );
+                }
                 if (r.statusCode == 429) {
-                  return CheckResult(status: CheckStatus.unknown, message: 'limite de stripe', gateway: 'stripe', latencyMs: ms);
+                  return CheckResult(
+                    status: CheckStatus.unknown,
+                    message: 'limite de stripe (429)',
+                    gateway: 'stripe',
+                    latencyMs: ms,
+                  );
+                }
+                if (r.statusCode >= 500) {
+                  return CheckResult(
+                    status: CheckStatus.unknown,
+                    message: 'stripe caido (${r.statusCode})',
+                    gateway: 'stripe',
+                    latencyMs: ms,
+                  );
+                }
+                if (r.statusCode != 200 && r.statusCode != 402) {
+                  return CheckResult(
+                    status: CheckStatus.unknown,
+                    message: 'http ${r.statusCode}',
+                    gateway: 'stripe',
+                    latencyMs: ms,
+                  );
                 }
 
+                // 402 = declive de tarjeta: se mapea normal.
                 final err = (body['error'] as Map?) ?? const <dynamic, dynamic>{};
                 return mapStripe(
                   type: (err['type'] ?? '').toString(),
@@ -2016,7 +2121,12 @@ jobs:
                 );
               } catch (_) {
                 sw.stop();
-                return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'stripe', latencyMs: sw.elapsedMilliseconds);
+                return CheckResult(
+                  status: CheckStatus.unknown,
+                  message: 'red',
+                  gateway: 'stripe',
+                  latencyMs: sw.elapsedMilliseconds,
+                );
               }
             }
 
@@ -2061,7 +2171,12 @@ jobs:
                 );
               } catch (_) {
                 sw.stop();
-                return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
+                return CheckResult(
+                  status: CheckStatus.unknown,
+                  message: 'red',
+                  gateway: 'dorkill',
+                  latencyMs: sw.elapsedMilliseconds,
+                );
               }
             }
 
@@ -3348,6 +3463,18 @@ jobs:
                 );
               } catch (e) {
                 out.add(CheckOutcome('motor', false, '$e'));
+              }
+
+              try {
+                final raw = await CheckEngine.probeRaw(
+                  key: cfg.stripeKey.isEmpty ? stripePk : cfg.stripeKey,
+                  doh: false,
+                  timeoutSec: cfg.timeoutSec,
+                );
+                final head = raw.split('\n').first;
+                out.add(CheckOutcome('stripe crudo (sin DoH)', head.contains('HTTP 200'), head));
+              } catch (e) {
+                out.add(CheckOutcome('stripe crudo (sin DoH)', false, '$e'));
               }
 
               engine.dispose();
@@ -6591,6 +6718,7 @@ jobs:
 
           cat > lib/screens/settings.dart <<'DART'
           import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
           import 'package:flutter_riverpod/flutter_riverpod.dart';
 
           import '../bin_db.dart';
@@ -6617,6 +6745,7 @@ jobs:
 
             List<CheckOutcome> _results = [];
             bool _running = false;
+            bool _probing = false;
 
             @override
             void initState() {
@@ -6665,6 +6794,45 @@ jobs:
               });
             }
 
+            /// Dispara una peticion cruda a Stripe, con y sin DoH, y muestra el
+            /// HTTP y el cuerpo tal cual.
+            Future<void> _probe() async {
+              final s = ref.read(settingsProvider);
+              final key = s.stripeKey.isEmpty ? stripePk : s.stripeKey;
+
+              setState(() => _probing = true);
+
+              final sin = await CheckEngine.probeRaw(key: key, doh: false, timeoutSec: s.timeoutSec);
+              final con = await CheckEngine.probeRaw(key: key, doh: true, timeoutSec: s.timeoutSec);
+
+              if (!mounted) return;
+              setState(() => _probing = false);
+
+              final txt = 'key: ${CheckEngine.maskKey(key)}\n\n$sin\n\n$con\n\n'
+                  'Lectura: HTTP 200 = key buena. 401/403 = key invalida. 429 = limite. '
+                  'FALLO = no llega a Stripe.';
+
+              await showDialog<void>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: AppColors.bgElevated,
+                  title: const Text('Prueba cruda de Stripe', style: AppTextStyles.h2),
+                  content: SingleChildScrollView(child: SelectableText(txt, style: AppTextStyles.tiny)),
+                  actions: [
+                    TextButton(
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: txt));
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        _snack('Copiado');
+                      },
+                      child: const Text('Copiar'),
+                    ),
+                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cerrar')),
+                  ],
+                ),
+              );
+            }
+
             Future<void> _download() async {
               final st = ref.read(binStatusProvider.notifier);
               st.state = const BinStatus(busy: true, note: 'descargando');
@@ -6702,6 +6870,7 @@ jobs:
               final bin = ref.watch(binStatusProvider);
 
               final failed = _results.where((r) => !r.ok).length;
+              final keyActiva = s.stripeKey.isEmpty ? stripePk : s.stripeKey;
 
               return ListView(
                 padding: const EdgeInsets.all(16),
@@ -6722,6 +6891,16 @@ jobs:
                           expand: true,
                           onPressed: _running ? null : _runDiagnostic,
                         ),
+                        const SizedBox(height: 10),
+                        NeonButton(
+                          label: _probing ? 'probando' : 'Probar motor (crudo)',
+                          icon: Icons.science_outlined,
+                          color: AppColors.cyan,
+                          expand: true,
+                          onPressed: _probing ? null : _probe,
+                        ),
+                        const SizedBox(height: 6),
+                        Text('key en uso: ${CheckEngine.maskKey(keyActiva)}', style: AppTextStyles.tiny),
                         if (_results.isNotEmpty) ...[
                           const SizedBox(height: 12),
                           Text(
@@ -6788,6 +6967,8 @@ jobs:
                               labelStyle: AppTextStyles.caption,
                             ),
                           ),
+                          const SizedBox(height: 6),
+                          Text('Usando: ${CheckEngine.maskKey(keyActiva)}', style: AppTextStyles.tiny),
                         ],
                         if (s.engine != 'stripe') ...[
                           const SizedBox(height: 12),
@@ -6859,7 +7040,7 @@ jobs:
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('DNS por HTTPS', style: AppTextStyles.body),
-                          subtitle: const Text('Esquiva el DNS secuestrado del operador', style: AppTextStyles.caption),
+                          subtitle: const Text('Esquiva el DNS secuestrado del operador. Si algo falla, prueba apagado.', style: AppTextStyles.caption),
                           value: s.doh,
                           activeColor: AppColors.cyan,
                           onChanged: n.setDoh,
