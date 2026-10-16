@@ -164,7 +164,7 @@ jobs:
           name: ccheker_live
           description: Checker masivo de tarjetas con boveda cifrada, cola por isolates y buscador de fuentes.
           publish_to: 'none'
-          version: 6.2.0+12
+          version: 6.4.0+14
 
           environment:
             sdk: '>=3.5.0 <4.0.0'
@@ -205,12 +205,14 @@ jobs:
           import 'dart:math';
 
           const appName = 'CCheker Live';
-          const appVersion = '6.2.0';
-          const appBuild = '6.2.0+12';
-          const appTag = 'v6.2';
+          const appVersion = '6.4.0';
+          const appBuild = '6.4.0+14';
+          const appTag = 'v6.4';
 
           const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
           const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
+          const stripePmUrl = 'https://api.stripe.com/v1/payment_methods';
+          const stripePiUrl = 'https://api.stripe.com/v1/payment_intents';
           const dorkillUrl = 'https://www.dorkill.com/api/check';
           const binlistUrl = 'https://lookup.binlist.net/';
           const defaultProbe = 'https://www.google.com/generate_204';
@@ -1210,7 +1212,11 @@ jobs:
           class Settings {
             const Settings({
               this.engine = 'stripe',
+              this.stripeKey class Settings {
+            const Settings({
+              this.engine = 'stripe',
               this.stripeKey = stripePk,
+              this.stripeSk = '',
               this.dorkillKey = '',
               this.retries = 1,
               this.useProxies = false,
@@ -1227,6 +1233,7 @@ jobs:
 
             final String engine;
             final String stripeKey;
+            final String stripeSk;
             final String dorkillKey;
             final int retries;
             final bool useProxies;
@@ -1243,6 +1250,7 @@ jobs:
             Settings copyWith({
               String? engine,
               String? stripeKey,
+              String? stripeSk,
               String? dorkillKey,
               int? retries,
               bool? useProxies,
@@ -1259,6 +1267,7 @@ jobs:
                 Settings(
                   engine: engine ?? this.engine,
                   stripeKey: stripeKey ?? this.stripeKey,
+                  stripeSk: stripeSk ?? this.stripeSk,
                   dorkillKey: dorkillKey ?? this.dorkillKey,
                   retries: retries ?? this.retries,
                   useProxies: useProxies ?? this.useProxies,
@@ -1276,6 +1285,7 @@ jobs:
             Map<String, dynamic> toJson() => {
                   'engine': engine,
                   'skey': stripeKey,
+                  'ssk': stripeSk,
                   'dkey': dorkillKey,
                   'retries': retries,
                   'useProxies': useProxies,
@@ -1293,6 +1303,7 @@ jobs:
             static Settings fromJson(Map<String, dynamic> j) => Settings(
                   engine: (j['engine'] ?? 'stripe').toString(),
                   stripeKey: (j['skey'] ?? stripePk).toString(),
+                  stripeSk: (j['ssk'] ?? '').toString(),
                   dorkillKey: (j['dkey'] ?? '').toString(),
                   retries: ((j['retries'] ?? 1) as num).toInt(),
                   useProxies: (j['useProxies'] ?? false) as bool,
@@ -1747,8 +1758,6 @@ jobs:
           import 'models.dart';
           import 'net.dart';
 
-          /// Fabrica de conexiones con DNS por HTTPS. Es top-level para que
-          /// tambien la use la prueba cruda.
           Future<ConnectionTask<Socket>> dohFactory(Uri uri, String? proxyHost, int? proxyPort, int timeoutSec) async {
             final t = Duration(seconds: timeoutSec);
 
@@ -1804,7 +1813,8 @@ jobs:
 
             List<ProxyNode> get proxies => _proxies;
 
-            static const _ua = 'CChekerLive/6.2';
+            static const _ua = 'CChekerLive/6.4';
+            static const _endpoints = <String>[stripeTokenUrl, stripePmUrl];
 
             HttpClient _bare() => HttpClient()
               ..connectionTimeout = Duration(seconds: cfg.timeoutSec)
@@ -1860,6 +1870,11 @@ jobs:
 
             String get _sk => cfg.stripeKey.isEmpty ? stripePk : cfg.stripeKey;
 
+            /// Monto que se autoriza en modo real, en centavos. 100 = \$1.00
+            static const _authCents = 100;
+
+            bool get _authOn => cfg.stripeSk.isNotEmpty;
+
             static String maskKey(String k) {
               if (k.length < 18) return k;
               return '${k.substring(0, 14)}...${k.substring(k.length - 4)}';
@@ -1868,7 +1883,7 @@ jobs:
             Future<String> fetchText(String url, {Map<String, String>? headers, int maxBytes = 8388608}) async {
               final p = _pick();
               final req = http.Request('GET', Uri.parse(url))
-                ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android) CChekerLive/6.2'
+                ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android) CChekerLive/6.4'
                 ..headers['Accept'] = 'text/plain,text/html,application/json,*/*';
               if (headers != null) req.headers.addAll(headers);
 
@@ -1907,14 +1922,16 @@ jobs:
               }
             }
 
-            /// Prueba cruda: dispara un token con la tarjeta de prueba y devuelve
-            /// el HTTP y el cuerpo tal cual, para saber exactamente que falla.
             static Future<String> probeRaw({
               required String key,
               required bool doh,
               required int timeoutSec,
+              bool alt = false,
             }) async {
               final sw = Stopwatch()..start();
+              final url = alt ? stripePmUrl : stripeTokenUrl;
+              final tag = '${alt ? 'pm  ' : 'tok '} DoH ${doh ? 'ON ' : 'OFF'}';
+
               HttpClient? hc;
               IOClient? client;
               try {
@@ -1927,12 +1944,13 @@ jobs:
 
                 final r = await client
                     .post(
-                      Uri.parse(stripeTokenUrl),
+                      Uri.parse(url),
                       headers: {
                         'Authorization': 'Bearer $key',
                         'Content-Type': 'application/x-www-form-urlencoded',
                       },
                       body: {
+                        if (alt) 'type': 'card',
                         'card[number]': '4242424242424242',
                         'card[exp_month]': '12',
                         'card[exp_year]': '2030',
@@ -1941,10 +1959,10 @@ jobs:
                     )
                     .timeout(Duration(seconds: timeoutSec));
 
-                final b = r.body.length > 220 ? '${r.body.substring(0, 220)}...' : r.body;
-                return 'DoH ${doh ? 'ON' : 'OFF'} · HTTP ${r.statusCode} · ${sw.elapsedMilliseconds}ms\n$b';
+                final b = r.body.length > 180 ? '${r.body.substring(0, 180)}...' : r.body;
+                return '$tag · HTTP ${r.statusCode} · ${sw.elapsedMilliseconds}ms\n$b';
               } catch (e) {
-                return 'DoH ${doh ? 'ON' : 'OFF'} · FALLO en ${sw.elapsedMilliseconds}ms\n$e';
+                return '$tag · FALLO en ${sw.elapsedMilliseconds}ms\n$e';
               } finally {
                 client?.close();
                 hc?.close(force: true);
@@ -2001,19 +2019,19 @@ jobs:
               return r(CheckStatus.unknown, 'sin clasificar');
             }
 
-            /// Ahora conserva el motivo real del ultimo intento en vez de
-            /// devolver siempre 'sin respuesta'.
             Future<CheckResult> check(CreditCard card) async {
               final max = cfg.retries + 1;
               var last = const CheckResult(status: CheckStatus.unknown, message: 'sin intentos');
 
               for (var attempt = 0; attempt < max; attempt++) {
                 final p = _pick();
-                final r = cfg.engine == 'both'
-                    ? await _cascade(card, p)
-                    : cfg.engine == 'dorkill'
-                        ? await _dorkill(card, p)
-                        : await _stripe(card, p);
+                final r = _authOn
+                    ? await _auth(card, p)
+                    : cfg.engine == 'both'
+                        ? await _cascade(card, p)
+                        : cfg.engine == 'dorkill'
+                            ? await _dorkill(card, p)
+                            : await _stripe(card, p);
 
                 last = r;
                 if (r.status != CheckStatus.unknown) return r;
@@ -2025,14 +2043,94 @@ jobs:
               return last;
             }
 
-            Future<CheckResult> _stripe(CreditCard card, ProxyNode? p) async {
-              final a = await _stripeWith(_client(p), card);
+            /// AUTORIZACION REAL. Crea un PaymentIntent con captura manual y
+            /// confirmado: el banco decide de verdad. No cobra, solo retiene.
+            Future<CheckResult> _auth(CreditCard card, ProxyNode? p) async {
+              final sw = Stopwatch()..start();
+              const gw = 'auth';
+              try {
+                final r = await _client(p)
+                    .post(
+                      Uri.parse(stripePiUrl),
+                      headers: {
+                        'Authorization': 'Bearer ${cfg.stripeSk}',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                      },
+                      body: {
+                        'amount': '$_authCents',
+                        'currency': 'usd',
+                        'capture_method': 'manual',
+                        'confirm': 'true',
+                        'automatic_payment_methods[enabled]': 'false',
+                        'payment_method_data[type]': 'card',
+                        'payment_method_data[card][number]': card.pan,
+                        'payment_method_data[card][exp_month]': card.expMonth.toString().padLeft(2, '0'),
+                        'payment_method_data[card][exp_year]': card.expYear.toString().padLeft(2, '0'),
+                        'payment_method_data[card][cvc]': card.cvv,
+                      },
+                    )
+                    .timeout(Duration(seconds: cfg.timeoutSec));
+                sw.stop();
 
-              // Si fallo de red y tenemos DoH puesto, reintenta sin DoH.
+                final ms = sw.elapsedMilliseconds;
+                final body = r.body.isEmpty ? <String, dynamic>{} : jsonDecode(r.body) as Map<String, dynamic>;
+
+                if (r.statusCode == 200) {
+                  final st = (body['status'] ?? '').toString();
+                  if (st == 'requires_capture' || st == 'succeeded') {
+                    return CheckResult(
+                      status: CheckStatus.live,
+                      message: 'autorizada \$${(_authCents / 100).toStringAsFixed(2)}',
+                      gateway: gw,
+                      latencyMs: ms,
+                    );
+                  }
+                  if (st == 'requires_action') {
+                    return CheckResult(status: CheckStatus.need3ds, message: 'pide 3ds', gateway: gw, latencyMs: ms);
+                  }
+                  if (st == 'processing') {
+                    return CheckResult(status: CheckStatus.unknown, message: 'procesando', gateway: gw, latencyMs: ms);
+                  }
+                  return CheckResult(status: CheckStatus.unknown, message: 'estado $st', gateway: gw, latencyMs: ms);
+                }
+
+                if (r.statusCode == 401 || r.statusCode == 403) {
+                  return CheckResult(status: CheckStatus.unknown, message: 'sk rechazada (${r.statusCode})', gateway: gw, latencyMs: ms);
+                }
+                if (r.statusCode == 429) {
+                  return CheckResult(status: CheckStatus.unknown, message: 'limite de stripe (429)', gateway: gw, latencyMs: ms);
+                }
+                if (r.statusCode >= 500) {
+                  return CheckResult(status: CheckStatus.unknown, message: 'stripe caido (${r.statusCode})', gateway: gw, latencyMs: ms);
+                }
+
+                final err = (body['error'] as Map?) ?? const <dynamic, dynamic>{};
+                final mapped = mapStripe(
+                  type: (err['type'] ?? '').toString(),
+                  code: (err['code'] ?? '').toString(),
+                  decline: (err['decline_code'] ?? '').toString(),
+                  msg: (err['message'] ?? 'rechazada').toString(),
+                  ms: ms,
+                );
+                return CheckResult(status: mapped.status, message: mapped.message, gateway: gw, latencyMs: ms);
+              } catch (_) {
+                sw.stop();
+                return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: gw, latencyMs: sw.elapsedMilliseconds);
+              }
+            }
+
+            Future<CheckResult> _stripe(CreditCard card, ProxyNode? p) async {
+              final a = await _stripeCall(_client(p), card, 0);
+
+              if (a.message.startsWith('surface')) {
+                final b = await _stripeCall(_client(p), card, 1);
+                return b;
+              }
+
               if (a.message == 'red' && cfg.doh && p == null) {
                 final raw = IOClient(_bare());
                 try {
-                  final b = await _stripeWith(raw, card);
+                  final b = await _stripeCall(raw, card, 0);
                   if (b.status != CheckStatus.unknown) return b;
                 } finally {
                   raw.close();
@@ -2042,17 +2140,19 @@ jobs:
               return a;
             }
 
-            Future<CheckResult> _stripeWith(http.Client client, CreditCard card) async {
+            Future<CheckResult> _stripeCall(http.Client client, CreditCard card, int which) async {
+              final gw = which == 0 ? 'stripe' : 'stripe-pm';
               final sw = Stopwatch()..start();
               try {
                 final r = await client
                     .post(
-                      Uri.parse(stripeTokenUrl),
+                      Uri.parse(_endpoints[which]),
                       headers: {
                         'Authorization': 'Bearer $_sk',
                         'Content-Type': 'application/x-www-form-urlencoded',
                       },
                       body: {
+                        if (which == 1) 'type': 'card',
                         'card[number]': card.pan,
                         'card[exp_month]': card.expMonth.toString().padLeft(2, '0'),
                         'card[exp_year]': card.expYear.toString().padLeft(2, '0'),
@@ -2071,62 +2171,43 @@ jobs:
                   return CheckResult(
                     status: CheckStatus.live,
                     message: brand.isEmpty ? 'aprobada' : 'aprobada · $brand',
-                    gateway: 'stripe',
+                    gateway: gw,
                     latencyMs: ms,
                   );
                 }
 
-                // Motivos explicitos, con el codigo a la vista.
                 if (r.statusCode == 401 || r.statusCode == 403) {
-                  return CheckResult(
-                    status: CheckStatus.unknown,
-                    message: 'key rechazada (${r.statusCode})',
-                    gateway: 'stripe',
-                    latencyMs: ms,
-                  );
+                  return CheckResult(status: CheckStatus.unknown, message: 'key rechazada (${r.statusCode})', gateway: gw, latencyMs: ms);
                 }
                 if (r.statusCode == 429) {
-                  return CheckResult(
-                    status: CheckStatus.unknown,
-                    message: 'limite de stripe (429)',
-                    gateway: 'stripe',
-                    latencyMs: ms,
-                  );
+                  return CheckResult(status: CheckStatus.unknown, message: 'limite de stripe (429)', gateway: gw, latencyMs: ms);
                 }
                 if (r.statusCode >= 500) {
-                  return CheckResult(
-                    status: CheckStatus.unknown,
-                    message: 'stripe caido (${r.statusCode})',
-                    gateway: 'stripe',
-                    latencyMs: ms,
-                  );
+                  return CheckResult(status: CheckStatus.unknown, message: 'stripe caido (${r.statusCode})', gateway: gw, latencyMs: ms);
+                }
+                if (r.statusCode == 400) {
+                  final m = ((body['error'] as Map?)?['message'] ?? '').toString();
+                  if (m.contains('unsupported')) {
+                    return CheckResult(status: CheckStatus.unknown, message: 'surface de Stripe apagado', gateway: gw, latencyMs: ms);
+                  }
+                  return CheckResult(status: CheckStatus.unknown, message: 'http 400', gateway: gw, latencyMs: ms);
                 }
                 if (r.statusCode != 200 && r.statusCode != 402) {
-                  return CheckResult(
-                    status: CheckStatus.unknown,
-                    message: 'http ${r.statusCode}',
-                    gateway: 'stripe',
-                    latencyMs: ms,
-                  );
+                  return CheckResult(status: CheckStatus.unknown, message: 'http ${r.statusCode}', gateway: gw, latencyMs: ms);
                 }
 
-                // 402 = declive de tarjeta: se mapea normal.
                 final err = (body['error'] as Map?) ?? const <dynamic, dynamic>{};
-                return mapStripe(
+                final mapped = mapStripe(
                   type: (err['type'] ?? '').toString(),
                   code: (err['code'] ?? '').toString(),
                   decline: (err['decline_code'] ?? '').toString(),
                   msg: (err['message'] ?? 'rechazada').toString(),
                   ms: ms,
                 );
+                return CheckResult(status: mapped.status, message: mapped.message, gateway: gw, latencyMs: ms);
               } catch (_) {
                 sw.stop();
-                return CheckResult(
-                  status: CheckStatus.unknown,
-                  message: 'red',
-                  gateway: 'stripe',
-                  latencyMs: sw.elapsedMilliseconds,
-                );
+                return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: gw, latencyMs: sw.elapsedMilliseconds);
               }
             }
 
@@ -2171,17 +2252,12 @@ jobs:
                 );
               } catch (_) {
                 sw.stop();
-                return CheckResult(
-                  status: CheckStatus.unknown,
-                  message: 'red',
-                  gateway: 'dorkill',
-                  latencyMs: sw.elapsedMilliseconds,
-                );
+                return CheckResult(status: CheckStatus.unknown, message: 'red', gateway: 'dorkill', latencyMs: sw.elapsedMilliseconds);
               }
             }
 
             Future<CheckResult> _cascade(CreditCard card, ProxyNode? p) async {
-              final a = await _stripe(card, p);
+              final a = _authOn ? await _auth(card, p) : await _stripe(card, p);
               if (a.status != CheckStatus.unknown && a.status != CheckStatus.dead) return a;
 
               final b = await _dorkill(card, p);
@@ -3521,7 +3597,10 @@ jobs:
               _save();
             }
 
-            void setDorkillKey(String v) {
+            void setStripeSk(String v) {
+              state = state.copyWith(stripeSk: v);
+              _save();
+            }
               state = state.copyWith(dorkillKey: v);
               _save();
             }
@@ -6741,6 +6820,7 @@ jobs:
           class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             late final TextEditingController _skey;
             late final TextEditingController _dkey;
+            late final TextEditingController _ssk;
             late final TextEditingController _pass;
 
             List<CheckOutcome> _results = [];
@@ -6752,6 +6832,7 @@ jobs:
               super.initState();
               _skey = TextEditingController(text: ref.read(settingsProvider).stripeKey);
               _dkey = TextEditingController(text: ref.read(settingsProvider).dorkillKey);
+              _ssk = TextEditingController(text: ref.read(settingsProvider).stripeSk);
               _pass = TextEditingController();
               _boot();
             }
@@ -6769,6 +6850,7 @@ jobs:
             void dispose() {
               _skey.dispose();
               _dkey.dispose();
+              _ssk.dispose();
               _pass.dispose();
               super.dispose();
             }
@@ -6969,6 +7051,23 @@ jobs:
                           ),
                           const SizedBox(height: 6),
                           Text('Usando: ${CheckEngine.maskKey(keyActiva)}', style: AppTextStyles.tiny),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _ssk,
+                            obscureText: true,
+                            style: AppTextStyles.mono,
+                            onChanged: n.setStripeSk,
+                            decoration: const InputDecoration(
+                              labelText: 'Stripe SECRET key (sk_test_...)',
+                              labelStyle: AppTextStyles.caption,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Con la secret key la app autoriza de verdad contra el banco: '
+                            'detecta sin fondos, 3DS y declives reales. No cobra nada, solo retiene.',
+                            style: AppTextStyles.tiny,
+                          ),
                         ],
                         if (s.engine != 'stripe') ...[
                           const SizedBox(height: 12),
