@@ -1,0 +1,83 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: stable
+          cache: true
+
+      - name: Preparar proyecto
+        run: |
+          set -e
+          flutter create --org com.cchekerx --project-name ccheker_live --platforms android ccheker_live
+          cd ccheker_live
+          rm -rf lib test
+          mkdir -p lib/screens
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          cp ../src/pubspec.yaml pubspec.yaml
+          cp ../src/analysis_options.yaml analysis_options.yaml
+          cp -r ../src/lib/. lib/
+          cd ..
+          python3 src/icon.py
+
+      - name: Parche Android
+        run: |
+          cd ccheker_live
+          MAN=android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <application|' "$MAN"
+          sed -i 's|android:label="ccheker_live"|android:label="CCheker Live"|' "$MAN" || true
+
+          MA=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n1)
+          PKG=$(echo "$MA" | sed 's|android/app/src/main/kotlin/||; s|/MainActivity.kt||; s|/|.|g')
+          cat > "$MA" <<KT
+          package $PKG
+
+          import io.flutter.embedding.android.FlutterFragmentActivity
+
+          class MainActivity : FlutterFragmentActivity()
+          KT
+
+          GR=android/app/build.gradle
+          sed -i -E 's/minSdkVersion flutter\.minSdkVersion/minSdkVersion 23/' "$GR" || true
+          sed -i -E 's/minSdk = flutter\.minSdkVersion/minSdk 23/' "$GR" || true
+          sed -i -E 's/compileSdkVersion flutter\.compileSdkVersion/compileSdkVersion 35/' "$GR" || true
+          sed -i -E 's/compileSdk = flutter\.compileSdkVersion/compileSdk 35/' "$GR" || true
+
+      - name: Compilar
+        run: |
+          cd ccheker_live
+          flutter pub get
+          find "$HOME/.pub-cache" -path '*android/build.gradle' -print0 2>/dev/null | while IFS= read -r -d '' g; do
+            if grep -q "namespace" "$g"; then continue; fi
+            d=$(dirname "$g")
+            kt=$(find "$d/src/main" -name '*.kt' 2>/dev/null | head -n1)
+            [ -z "$kt" ] && continue
+            pkg=$(grep -m1 '^package ' "$kt" | sed 's/package //; s/;//; s/[[:space:]]//g')
+            [ -z "$pkg" ] && continue
+            sed -i "0,/^android {/s||android {\n    namespace '$pkg'|" "$g"
+          done
+          flutter analyze --no-fatal-infos
+          flutter build apk --release
+          ls -lh build/app/outputs/flutter-apk/
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccheker-live-v7-2
+          path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccheker-live-v7-2
+          path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
