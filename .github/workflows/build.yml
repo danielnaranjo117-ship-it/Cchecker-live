@@ -21,7 +21,7 @@ jobs:
       - name: Preparar proyecto
         run: |
           set -e
-          echo "=== CCheker Live v7.1 ==="
+          echo "=== CCheker Live v7.2 ==="
           flutter create --org com.cchekerx --project-name ccheker_live --platforms android ccheker_live
           cd ccheker_live
           rm -rf lib test
@@ -115,7 +115,7 @@ jobs:
           name: ccheker_live
           description: Checker masivo con boveda cifrada, autorizacion real y buscador de fuentes.
           publish_to: 'none'
-          version: 7.1.0+21
+          version: 7.2.0+22
 
           environment:
             sdk: '>=3.5.0 <4.0.0'
@@ -155,9 +155,9 @@ jobs:
           import 'dart:math';
 
           const appName = 'CCheker Live';
-          const appVersion = '7.1.0';
-          const appBuild = '7.1.0+21';
-          const appTag = 'v7.1';
+          const appVersion = '7.2.0';
+          const appBuild = '7.2.0+22';
+          const appTag = 'v7.2';
 
           const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
           const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
@@ -772,9 +772,7 @@ jobs:
 
           cat > lib/net.dart <<'DART'
           import 'dart:convert';
-          import 'dart:typed_data';
-
-          import 'package:crypto/crypto.dart';
+          import 'dart:io';
 
           import 'core.dart';
 
@@ -838,6 +836,7 @@ jobs:
 
           cat > lib/repos.dart <<'DART'
           import 'dart:convert';
+          import 'dart:typed_data';
 
           import 'package:crypto/crypto.dart';
           import 'package:encrypt/encrypt.dart' as enc;
@@ -1057,6 +1056,7 @@ jobs:
             final now = DateTime.now();
             final base = digitsOf(spec.bin);
             if (base.isEmpty) return out;
+
             final baseBrand = brandOf(base);
             final target = spec.len == 16 ? panLenFor(baseBrand) : spec.len;
 
@@ -1176,7 +1176,6 @@ jobs:
           cat > lib/checker.dart <<'DART'
           import 'dart:async';
           import 'dart:convert';
-          import 'dart:typed_data';
           import 'dart:io';
 
           import 'package:http/http.dart' as http;
@@ -1205,6 +1204,7 @@ jobs:
             final Settings cfg;
             final List<ProxyNode> _proxies;
             final Map<String, http.Client> _clients = {};
+            int _rr = 0;
 
             static const _authCents = 100;
 
@@ -1252,8 +1252,6 @@ jobs:
               }
               _clients.clear();
             }
-
-            int _rr = 0;
 
             ProxyNode? _pick() {
               if (!cfg.useProxies) return null;
@@ -1716,6 +1714,7 @@ jobs:
               t('repara 4111111111111112', () => completeLuhn('411111111111111') == '4111111111111111');
               t('marca visa', () => brandOf('4111111111111111') == 'visa');
               t('marca amex', () => brandOf('378282246310005') == 'amex');
+              t('amex pide 15 digitos', () => panLenFor('amex') == 15);
               t('vencida 01/20', () => expiredCard(1, 20));
               t('no vencida 12/40', () => !expiredCard(12, 40));
               t('sin fondos no es muerta',
@@ -2044,6 +2043,8 @@ jobs:
           import 'screens/shell.dart';
           import 'theme.dart';
 
+          const appTitle = 'CCheker Live';
+
           Future<void> main() async {
             WidgetsFlutterBinding.ensureInitialized();
             await Vault.init();
@@ -2071,8 +2072,6 @@ jobs:
                           : SetupScreen(onDone: () => setState(() => _ready = true))),
                 );
           }
-
-          const appTitle = 'CCheker Live';
           DART
 
           cat > lib/screens/setup.dart <<'DART'
@@ -3388,5 +3387,5 @@ jobs:
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
-          name: ccheker-live-v7-1
+          name: ccheker-live-v7-2
           path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
