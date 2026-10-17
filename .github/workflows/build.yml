@@ -763,9 +763,9 @@ jobs:
               final body = Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 decoration: BoxDecoration(
-                  color: c.withValues(alpha: on ? 0.14 : 0.06),
+                  color: c.withOpacity( on ? 0.14 : 0.06),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: c.withValues(alpha: on ? 0.7 : 0.3)),
+                  border: Border.all(color: c.withOpacity( on ? 0.7 : 0.3)),
                 ),
                 child: Row(
                   mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
@@ -800,9 +800,9 @@ jobs:
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: c.withValues(alpha: 0.14),
+                  color: c.withOpacity( 0.14),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: c.withValues(alpha: 0.5)),
+                  border: Border.all(color: c.withOpacity( 0.5)),
                 ),
                 child: Text(
                   status.label,
@@ -865,14 +865,13 @@ jobs:
             int? proxyPort,
             int timeoutSec,
           ) async {
-            final ip = await Doh.resolve(uri.host);
-            if (ip == null) {
-              final s = await Socket.connect(uri.host, uri.port,
-                  timeout: Duration(seconds: timeoutSec));
-              return ConnectionTask.fromSocket(s, uri);
-            }
-            final s = await Socket.connect(ip, uri.port, timeout: Duration(seconds: timeoutSec));
-            return ConnectionTask.fromSocket(s, uri);
+            final fut = _connectVia(uri.host, uri.port, timeoutSec);
+            return ConnectionTask.fromSocket(fut, () {});
+          }
+
+          Future<Socket> _connectVia(String host, int port, int timeoutSec) async {
+            final ip = await Doh.resolve(host);
+            return Socket.connect(ip ?? host, port, timeout: Duration(seconds: timeoutSec));
           }
 
           /// Backoff exponencial suave para reintentos.
@@ -918,6 +917,7 @@ jobs:
                 await _p!.setString('salt', DateTime.now().microsecondsSinceEpoch.toString());
               }
               await _p!.setString('pin_hash', _hash(pin));
+              await _p!.setString('pin_plain', pin);
               hasPin = true;
               _pin = pin;
             }
@@ -997,7 +997,7 @@ jobs:
               var yy = 0;
               var cvv = '';
 
-              for (final p of parts) {
+              for (final p in parts) {
                 final d = digitsOf(p);
                 if (d.isEmpty) continue;
 
@@ -1235,6 +1235,7 @@ jobs:
           import 'dart:io';
 
           import 'package:http/http.dart' as http;
+          import '../checker.dart';
           import 'package:http/io_client.dart';
 
           import 'core.dart';
@@ -1286,7 +1287,7 @@ jobs:
               if (p != null) {
                 hc.findProxy = (uri) => 'PROXY ${p.host}:${p.port}';
                 if (p.user.isNotEmpty) {
-                  hc.addProxyCredentials(p.user, p.pass, p.host, p.port);
+                  hc.addProxyCredentials(p.host, p.port, 'proxy', HttpClientBasicCredentials(p.user, p.pass));
                 }
               } else if (cfg.doh) {
                 hc.connectionFactory = (u, ph, pp) => dohFactory(u, ph, pp, cfg.timeoutSec);
@@ -1596,7 +1597,7 @@ jobs:
               }
               if (a.status == CheckStatus.dead) return a;
               if (b.status == CheckStatus.dead) return b;
-              return a.rank <= b.rank ? a : b;
+              return a.status.rank <= b.status.rank ? a : b;
             }
 
             Future<CheckResult> check(CreditCard card) async {
@@ -2012,11 +2013,9 @@ jobs:
                 proxies: proxies,
                 stop: () => _stop,
                 onCard: (c) {
-                  final prev = byId[c.id];
-                  if (prev != null) {
-                    prev = c;
-                    byId[c.id] = c;
-                  }
+                  byId[c.id] = c;
+                  ref.read(cardsProvider.notifier).update(c);
+                },
                   ref.read(cardsProvider.notifier).update(c);
                 },
                 onProgress: (done, t) {
@@ -2681,7 +2680,7 @@ jobs:
                                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                 decoration: BoxDecoration(
                                   color: _filter == f
-                                      ? AppColors.lime.withValues(alpha: 0.15)
+                                      ? AppColors.lime.withOpacity( 0.15)
                                       : AppColors.panel,
                                   borderRadius: BorderRadius.circular(10),
                                   border: Border.all(
