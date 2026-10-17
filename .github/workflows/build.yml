@@ -21,7 +21,7 @@ jobs:
       - name: Preparar proyecto
         run: |
           set -e
-          echo "=== CCheker Live v7.0 ==="
+          echo "=== CCheker Live v7.1 ==="
           flutter create --org com.cchekerx --project-name ccheker_live --platforms android ccheker_live
           cd ccheker_live
           rm -rf lib test
@@ -115,7 +115,7 @@ jobs:
           name: ccheker_live
           description: Checker masivo con boveda cifrada, autorizacion real y buscador de fuentes.
           publish_to: 'none'
-          version: 7.0.0+20
+          version: 7.1.0+21
 
           environment:
             sdk: '>=3.5.0 <4.0.0'
@@ -155,9 +155,9 @@ jobs:
           import 'dart:math';
 
           const appName = 'CCheker Live';
-          const appVersion = '7.0.0';
-          const appBuild = '7.0.0+20';
-          const appTag = 'v7.0';
+          const appVersion = '7.1.0';
+          const appBuild = '7.1.0+21';
+          const appTag = 'v7.1';
 
           const stripePk = 'pk_test_51UQWXHLSAWNUOV2fKgvafDXscpBBbd067QkfHEDeEkCZvHJht7LyA43wccu1iX4OBPgbGFxtzwmKI6GMS4akzx0O00xWOD8V42';
           const stripeTokenUrl = 'https://api.stripe.com/v1/tokens';
@@ -250,7 +250,6 @@ jobs:
           cat > lib/models.dart <<'DART'
           import 'core.dart';
 
-          /// Ordenado por utilidad: lo cobrable primero.
           enum CheckStatus {
             unchecked,
             checking,
@@ -291,7 +290,6 @@ jobs:
                   CheckStatus.unchecked => '-',
                 };
 
-            /// Sirve para cobrar en alguna tienda, aunque no sea perfecta.
             bool get cobrable =>
                 this == CheckStatus.live ||
                 this == CheckStatus.noFunds ||
@@ -300,7 +298,6 @@ jobs:
                 this == CheckStatus.avsFail ||
                 this == CheckStatus.restricted;
 
-            /// Menor = mejor. Se usa para elegir el mejor resultado de la cascada.
             int get rank => switch (this) {
                   CheckStatus.live => 0,
                   CheckStatus.noFunds => 1,
@@ -313,8 +310,6 @@ jobs:
                   CheckStatus.checking => 11,
                   CheckStatus.unchecked => 12,
                 };
-
-            bool get isFinal => this != CheckStatus.unchecked && this != CheckStatus.checking;
           }
 
           class CreditCard {
@@ -407,29 +402,30 @@ jobs:
                   'at': checkedAt?.toIso8601String(),
                 };
 
-            static CreditCard fromJson(Map<String, dynamic> j) => CreditCard(
-                  id: (j['id'] ?? newId()).toString(),
-                  pan: (j['pan'] ?? '').toString(),
-                  expMonth: ((j['mm'] ?? 1) as num).toInt(),
-                  expYear: ((j['yy'] ?? 30) as num).toInt(),
-                  cvv: (j['cvv'] ?? '').toString(),
-                  brand: (j['brand'] ?? '').toString(),
-                  bin: (j['pan'] ?? '').toString().length >= 6
-                      ? (j['pan'] as String).substring(0, 6)
-                      : '',
-                  bank: (j['bank'] ?? '').toString(),
-                  country: (j['country'] ?? '').toString(),
-                  level: (j['level'] ?? '').toString(),
-                  kind: (j['kind'] ?? '').toString(),
-                  status: CheckStatus.values.firstWhere(
-                    (s) => s.name == j['st'],
-                    orElse: () => CheckStatus.unchecked,
-                  ),
-                  message: (j['msg'] ?? '').toString(),
-                  gateway: (j['gw'] ?? '').toString(),
-                  latencyMs: ((j['ms'] ?? 0) as num).toInt(),
-                  checkedAt: j['at'] == null ? null : DateTime.tryParse(j['at'].toString()),
-                );
+            static CreditCard fromJson(Map<String, dynamic> j) {
+              final pan = (j['pan'] ?? '').toString();
+              return CreditCard(
+                id: (j['id'] ?? newId()).toString(),
+                pan: pan,
+                expMonth: ((j['mm'] ?? 1) as num).toInt(),
+                expYear: ((j['yy'] ?? 30) as num).toInt(),
+                cvv: (j['cvv'] ?? '').toString(),
+                brand: (j['brand'] ?? '').toString(),
+                bin: pan.length >= 6 ? pan.substring(0, 6) : '',
+                bank: (j['bank'] ?? '').toString(),
+                country: (j['country'] ?? '').toString(),
+                level: (j['level'] ?? '').toString(),
+                kind: (j['kind'] ?? '').toString(),
+                status: CheckStatus.values.firstWhere(
+                  (s) => s.name == j['st'],
+                  orElse: () => CheckStatus.unchecked,
+                ),
+                message: (j['msg'] ?? '').toString(),
+                gateway: (j['gw'] ?? '').toString(),
+                latencyMs: ((j['ms'] ?? 0) as num).toInt(),
+                checkedAt: j['at'] == null ? null : DateTime.tryParse(j['at'].toString()),
+              );
+            }
           }
 
           enum ProxyKind { http, socks }
@@ -512,23 +508,6 @@ jobs:
             final int junk;
             final int fixed;
             final int expired;
-          }
-
-          class BinInfo {
-            BinInfo({
-              this.brand = '',
-              this.kind = '',
-              this.level = '',
-              this.bank = '',
-              this.country = '',
-            });
-            final String brand;
-            final String kind;
-            final String level;
-            final String bank;
-            final String country;
-            bool get isEmpty =>
-                brand.isEmpty && kind.isEmpty && level.isEmpty && bank.isEmpty && country.isEmpty;
           }
 
           class Settings {
@@ -763,9 +742,9 @@ jobs:
               final body = Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 decoration: BoxDecoration(
-                  color: c.withOpacity( on ? 0.14 : 0.06),
+                  color: c.withOpacity(on ? 0.14 : 0.06),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: c.withOpacity( on ? 0.7 : 0.3)),
+                  border: Border.all(color: c.withOpacity(on ? 0.7 : 0.3)),
                 ),
                 child: Row(
                   mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
@@ -789,43 +768,14 @@ jobs:
               );
             }
           }
-
-          class StatusChip extends StatelessWidget {
-            const StatusChip({super.key, required this.status});
-            final CheckStatusLike status;
-
-            @override
-            Widget build(BuildContext context) {
-              final c = status.color;
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: c.withOpacity( 0.14),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: c.withOpacity( 0.5)),
-                ),
-                child: Text(
-                  status.label,
-                  style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w800),
-                ),
-              );
-            }
-          }
-
-          abstract class CheckStatusLike {
-            String get label;
-            Color get color;
-          }
           DART
 
           cat > lib/net.dart <<'DART'
-          import 'dart:async';
           import 'dart:convert';
           import 'dart:io';
 
           import 'core.dart';
 
-          /// Resolucion DNS por HTTPS (DoH). Evita que el operador vea o bloquee.
           class Doh {
             static final Map<String, String> _cache = {};
 
@@ -874,7 +824,6 @@ jobs:
             return Socket.connect(ip ?? host, port, timeout: Duration(seconds: timeoutSec));
           }
 
-          /// Backoff exponencial suave para reintentos.
           class NetSense {
             NetSense._();
             static final NetSense i = NetSense._();
@@ -892,8 +841,6 @@ jobs:
           import 'package:encrypt/encrypt.dart' as enc;
           import 'package:shared_preferences/shared_preferences.dart';
 
-          /// Boveda: guarda todo en shared_preferences.
-          /// Si hay PIN, el contenido se cifra con AES-256-CBC.
           class Vault {
             static SharedPreferences? _p;
             static String _pin = '';
@@ -973,10 +920,6 @@ jobs:
 
           final _sep = RegExp(r'[|,;:\t= ]+');
 
-          /// Acepta lineas tipo:
-          ///   4242424242424242|12|30|123
-          ///   4242424242424242 12/30 123
-          ///   nombre,4242...,12,2030,123
           ImportResult parseCards(String text, {bool repair = true}) {
             final out = <CreditCard>[];
             final seen = <String>{};
@@ -1050,18 +993,15 @@ jobs:
               }
 
               final brand = brandOf(pan);
-              final full = pan.length == panLenFor(brand);
-              if (!full) {
+              if (pan.length != panLenFor(brand) && pan.length != 16 && pan.length != 15) {
                 junk++;
                 continue;
               }
 
               if (mm < 1 || mm > 12) mm = 1;
               if (yy == 0) yy = (DateTime.now().year % 100) + 2;
-              if (yy < 100) yy = yy;
 
-              final isExp = expiredCard(mm, yy);
-              if (isExp) exp++;
+              if (expiredCard(mm, yy)) exp++;
 
               final card = CreditCard(
                 id: newId(),
@@ -1168,7 +1108,6 @@ jobs:
             }
           }
 
-          /// Estimacion por BIN. NO es el saldo real: es un rango probable.
           BalanceRange estimateBalance(CreditCard card) {
             final level = card.level.toLowerCase();
             final kind = card.kind.toLowerCase();
@@ -1235,7 +1174,6 @@ jobs:
           import 'dart:io';
 
           import 'package:http/http.dart' as http;
-          import '../checker.dart';
           import 'package:http/io_client.dart';
 
           import 'core.dart';
@@ -1262,7 +1200,6 @@ jobs:
             final List<ProxyNode> _proxies;
             final Map<String, http.Client> _clients = {};
 
-            /// Monto autorizado, en centavos. 100 = \$1.00
             static const _authCents = 100;
 
             bool get _authOn => cfg.authOn;
@@ -1287,7 +1224,12 @@ jobs:
               if (p != null) {
                 hc.findProxy = (uri) => 'PROXY ${p.host}:${p.port}';
                 if (p.user.isNotEmpty) {
-                  hc.addProxyCredentials(p.host, p.port, 'proxy', HttpClientBasicCredentials(p.user, p.pass));
+                  hc.addProxyCredentials(
+                    p.host,
+                    p.port,
+                    'proxy',
+                    HttpClientBasicCredentials(p.user, p.pass),
+                  );
                 }
               } else if (cfg.doh) {
                 hc.connectionFactory = (u, ph, pp) => dohFactory(u, ph, pp, cfg.timeoutSec);
@@ -1346,8 +1288,6 @@ jobs:
               return s.length > 80 ? s.substring(0, 80) : s;
             }
 
-            /// Autorizacion REAL: PaymentIntent con captura manual.
-            /// No cobra: solo retiene. Es el unico metodo que dice la verdad.
             Future<CheckResult> _auth(CreditCard card) async {
               final sw = Stopwatch()..start();
               try {
@@ -1445,7 +1385,6 @@ jobs:
               }
             }
 
-            /// Si la key es invalida, no enrojece todo: cae a token y lo avisa.
             Future<CheckResult> _authOrToken(CreditCard card, ProxyNode? p) async {
               if (!_authOn) return _stripe(card, p);
               final a = await _auth(card);
@@ -1461,7 +1400,6 @@ jobs:
               return a;
             }
 
-            /// Token: solo valida formato (Luhn, fecha, largo de cvv).
             Future<CheckResult> _stripe(CreditCard card, ProxyNode? p) async {
               final sw = Stopwatch()..start();
               try {
@@ -1626,11 +1564,11 @@ jobs:
               return last;
             }
 
-            /// Prueba cruda contra un endpoint: sirve para saber si hay red.
             Future<String> probe(String url, {Map<String, String>? headers}) async {
               final sw = Stopwatch()..start();
               try {
-                final r = await _client(null).get(Uri.parse(url), headers: headers)
+                final r = await _client(null)
+                    .get(Uri.parse(url), headers: headers)
                     .timeout(Duration(seconds: cfg.timeoutSec));
                 sw.stop();
                 return 'HTTP ${r.statusCode} · ${sw.elapsedMilliseconds}ms · ${r.body.length}B';
@@ -1665,8 +1603,6 @@ jobs:
           DART
 
           cat > lib/queue.dart <<'DART'
-          import 'dart:async';
-
           import 'checker.dart';
           import 'models.dart';
 
@@ -1717,8 +1653,6 @@ jobs:
           DART
 
           cat > lib/scraper.dart <<'DART'
-          import 'dart:async';
-
           import 'checker.dart';
           import 'models.dart';
 
@@ -1741,11 +1675,6 @@ jobs:
               engine.dispose();
             }
           }
-
-          List<String> defaultSources() => const [
-                'https://raw.githubusercontent.com/venelinkochev/bin-list-data/master/bin-list-data.json',
-                'https://api.ipify.org?format=json',
-              ];
           DART
 
           cat > lib/selftest.dart <<'DART'
@@ -1792,7 +1721,13 @@ jobs:
               t('muerta no es cobrable', () => !CheckStatus.dead.cobrable);
               t('live gana en rank', () => CheckStatus.live.rank < CheckStatus.dead.rank);
 
-              final fake = CreditCard(id: 'x', pan: '4111111111111111', expMonth: 1, expYear: 30, kind: 'credit');
+              final fake = CreditCard(
+                id: 'x',
+                pan: '4111111111111111',
+                expMonth: 1,
+                expYear: 30,
+                kind: 'credit',
+              );
               t('estimador de credito da rango', () => estimateBalance(fake).hi > 0);
 
               return out;
@@ -1801,12 +1736,10 @@ jobs:
           DART
 
           cat > lib/providers.dart <<'DART'
-          import 'dart:async';
           import 'dart:convert';
 
           import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-          import 'checker.dart';
           import 'models.dart';
           import 'queue.dart';
           import 'repos.dart';
@@ -1818,14 +1751,15 @@ jobs:
           class SettingsNotifier extends StateNotifier<Settings> {
             SettingsNotifier() : super(const Settings()) {
               final raw = Vault.get('settings');
-              if (raw.isNotEmpty) {
-                try {
-                  state = Settings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
-                } catch (_) {}
-              }
+              if (raw.isEmpty) return;
+              try {
+                state = Settings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+              } catch (_) {}
             }
 
-            Future<void> _save() => Vault.put('settings', jsonEncode(state.toJson()));
+            Future<void> _save() async {
+              await Vault.put('settings', jsonEncode(state.toJson()));
+            }
 
             Future<void> setEngine(String v) async {
               state = state.copyWith(engine: v);
@@ -1871,11 +1805,6 @@ jobs:
               state = state.copyWith(biometrics: v);
               await _save();
             }
-
-            Future<void> setBinDbUrl(String v) async {
-              state = state.copyWith(binDbUrl: v);
-              await _save();
-            }
           }
 
           final cardsProvider = StateNotifierProvider<CardsNotifier, List<CreditCard>>((ref) {
@@ -1883,20 +1812,18 @@ jobs:
           });
 
           class CardsNotifier extends StateNotifier<List<CreditCard>> {
-            CardsNotifier() : super([]) {
+            CardsNotifier() : super(const <CreditCard>[]) {
               final raw = Vault.get('cards');
-              if (raw.isNotEmpty) {
-                try {
-                  final list = jsonDecode(raw) as List<dynamic>;
-                  state = list
-                      .map((e) => CreditCard.fromJson(e as Map<String, dynamic>))
-                      .toList();
-                } catch (_) {}
-              }
+              if (raw.isEmpty) return;
+              try {
+                final list = jsonDecode(raw) as List<dynamic>;
+                state = list.map((e) => CreditCard.fromJson(e as Map<String, dynamic>)).toList();
+              } catch (_) {}
             }
 
-            Future<void> _save() =>
-                Vault.put('cards', jsonEncode(state.map((c) => c.toJson()).toList()));
+            Future<void> save() async {
+              await Vault.put('cards', jsonEncode(state.map((c) => c.toJson()).toList()));
+            }
 
             void addAll(List<CreditCard> cards) {
               final seen = state.map((c) => c.key).toSet();
@@ -1905,36 +1832,30 @@ jobs:
                 if (seen.add(c.key)) add.add(c);
               }
               state = [...state, ...add];
-              _save();
+              save();
             }
 
             void update(CreditCard card) {
               state = [for (final c in state) c.id == card.id ? card : c];
-              _save();
+              save();
             }
-
-            void patch(String id, CreditCard Function(CreditCard) fn) {
-              state = [for (final c in state) c.id == id ? fn(c) : c];
-            }
-
-            void persist() => _save();
 
             void remove(String id) {
               state = state.where((c) => c.id != id).toList();
-              _save();
+              save();
             }
 
             void clear() {
-              state = [];
-              _save();
+              state = const <CreditCard>[];
+              save();
             }
 
             void resetResults() {
               state = [
                 for (final c in state)
-                  c.copyWith(status: CheckStatus.unchecked, message: '', gateway: '', latencyMs: 0)
+                  c.copyWith(status: CheckStatus.unchecked, message: '', gateway: '', latencyMs: 0),
               ];
-              _save();
+              save();
             }
           }
 
@@ -1943,32 +1864,32 @@ jobs:
           });
 
           class ProxiesNotifier extends StateNotifier<List<ProxyNode>> {
-            ProxiesNotifier() : super([]) {
+            ProxiesNotifier() : super(const <ProxyNode>[]) {
               final raw = Vault.get('proxies');
-              if (raw.isNotEmpty) {
-                try {
-                  final list = jsonDecode(raw) as List<dynamic>;
-                  state = list.map((e) => ProxyNode.fromJson(e as Map<String, dynamic>)).toList();
-                } catch (_) {}
-              }
+              if (raw.isEmpty) return;
+              try {
+                final list = jsonDecode(raw) as List<dynamic>;
+                state = list.map((e) => ProxyNode.fromJson(e as Map<String, dynamic>)).toList();
+              } catch (_) {}
             }
 
-            Future<void> _save() =>
-                Vault.put('proxies', jsonEncode(state.map((p) => p.toJson()).toList()));
+            Future<void> save() async {
+              await Vault.put('proxies', jsonEncode(state.map((p) => p.toJson()).toList()));
+            }
 
             void addAll(List<ProxyNode> nodes) {
               state = [...state, ...nodes];
-              _save();
+              save();
             }
 
             void update(ProxyNode p) {
               state = [for (final x in state) x.id == p.id ? p : x];
-              _save();
+              save();
             }
 
             void remove(String id) {
               state = state.where((p) => p.id != id).toList();
-              _save();
+              save();
             }
           }
 
@@ -1986,36 +1907,34 @@ jobs:
 
           class RunNotifier extends StateNotifier<RunState> {
             RunNotifier(this.ref) : super(const RunState());
+
             final Ref ref;
             bool _stop = false;
 
-            void toggle() => state.running ? stop() : start();
-
-            void stop() {
-              _stop = true;
+            void toggle() {
+              if (state.running) {
+                _stop = true;
+              } else {
+                start();
+              }
             }
 
             Future<void> start() async {
               final cfg = ref.read(settingsProvider);
-              final cards = ref.read(cardsProvider);
-              final proxies = ref.read(proxiesProvider);
-              if (cards.isEmpty) return;
+              final list = ref.read(cardsProvider);
+              final pool = ref.read(proxiesProvider);
+              if (list.isEmpty) return;
 
               _stop = false;
-              final total = cards.length;
+              final total = list.length;
               state = RunState(running: true, total: total, note: cfg.mode);
 
-              final byId = {for (final c in cards) c.id: c};
-
               await runMass(
-                cards: cards,
+                cards: list,
                 cfg: cfg,
-                proxies: proxies,
+                proxies: pool,
                 stop: () => _stop,
                 onCard: (c) {
-                  byId[c.id] = c;
-                  ref.read(cardsProvider.notifier).update(c);
-                },
                   ref.read(cardsProvider.notifier).update(c);
                 },
                 onProgress: (done, t) {
@@ -2023,16 +1942,11 @@ jobs:
                 },
               );
 
-              ref.read(cardsProvider.notifier).persist();
-              state = RunState(running: false, done: state.done, total: total, note: 'listo');
+              await ref.read(cardsProvider.notifier).save();
+              final d = state.done;
+              state = RunState(running: false, done: d, total: total, note: 'listo');
             }
           }
-
-          final engineProvider = Provider<CheckEngine>((ref) {
-            final cfg = ref.watch(settingsProvider);
-            final proxies = ref.watch(proxiesProvider);
-            return CheckEngine(cfg, proxies: proxies);
-          });
           DART
 
           cat > lib/run_bar.dart <<'DART'
@@ -2224,7 +2138,7 @@ jobs:
                               ),
                               const SizedBox(height: 8),
                               const Text(
-                                'OJO: el PIN cifra la boveda. Si lo pierdes, pierdes los datos. Guarda tambien una copia exportada.',
+                                'OJO: el PIN cifra la boveda. Si lo pierdes, pierdes los datos.',
                                 style: AppTextStyles.tiny,
                               ),
                               if (_err.isNotEmpty) ...[
@@ -2412,10 +2326,7 @@ jobs:
                                         color: _tab == i ? AppColors.lime : AppColors.textMid,
                                       ),
                                       const SizedBox(height: 3),
-                                      Text(
-                                        _tabs[i].$1,
-                                        style: AppTextStyles.tiny,
-                                      ),
+                                      Text(_tabs[i].$1, style: AppTextStyles.tiny),
                                     ],
                                   ),
                                 ),
@@ -2563,10 +2474,6 @@ jobs:
                           bin: p.substring(0, 6),
                         );
                         ref.read(cardsProvider.notifier).addAll([card]);
-                        pan.clear();
-                        mm.clear();
-                        yy.clear();
-                        cvv.clear();
                         Navigator.pop(ctx);
                       },
                       child: const Text('anadir'),
@@ -2647,9 +2554,7 @@ jobs:
                     padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
                     child: Row(
                       children: [
-                        const Expanded(
-                          child: Text('Boveda', style: AppTextStyles.title),
-                        ),
+                        const Expanded(child: Text('Boveda', style: AppTextStyles.title)),
                         Text('${fmtInt(all.length)} tarjetas', style: AppTextStyles.caption),
                       ],
                     ),
@@ -2680,7 +2585,7 @@ jobs:
                                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                 decoration: BoxDecoration(
                                   color: _filter == f
-                                      ? AppColors.lime.withOpacity( 0.15)
+                                      ? AppColors.lime.withOpacity(0.15)
                                       : AppColors.panel,
                                   borderRadius: BorderRadius.circular(10),
                                   border: Border.all(
@@ -2702,9 +2607,7 @@ jobs:
                   ),
                   Expanded(
                     child: cards.isEmpty
-                        ? const Center(
-                            child: Text('nada por aqui', style: AppTextStyles.caption),
-                          )
+                        ? const Center(child: Text('nada por aqui', style: AppTextStyles.caption))
                         : ListView.builder(
                             padding: const EdgeInsets.symmetric(horizontal: 12),
                             itemCount: cards.length,
@@ -2840,7 +2743,7 @@ jobs:
                   const Text('Importar', style: AppTextStyles.title),
                   const SizedBox(height: 6),
                   const Text(
-                    'Pega tarjetas: numero|MM|AA|CVV, una por linea. Tambien acepta 12/30, comas, espacios.',
+                    'Pega tarjetas: numero|MM|AA|CVV, una por linea.',
                     style: AppTextStyles.caption,
                   ),
                   const SectionHeader('Pegar'),
@@ -2987,7 +2890,7 @@ jobs:
                     const Text('Fuentes', style: AppTextStyles.title),
                     const SizedBox(height: 6),
                     const Text(
-                      'Pega la URL de una lista publica de tarjetas. Se descarga, se parsea y se guarda.',
+                      'Pega la URL de una lista. Se descarga, se parsea y se guarda.',
                       style: AppTextStyles.caption,
                     ),
                     const SectionHeader('URL'),
@@ -3007,17 +2910,6 @@ jobs:
                       const SizedBox(height: 10),
                       Text(_note, style: AppTextStyles.caption),
                     ],
-                    const SectionHeader('Ideas de donde sacar listas'),
-                    const GlassPanel(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('GitHub: busca "cc checker list" o "bin list"', style: AppTextStyles.caption),
-                          const SizedBox(height: 4),
-                          Text('Pega el enlace "raw" del archivo .txt o .csv', style: AppTextStyles.caption),
-                        ],
-                      ),
-                    ),
                     const SizedBox(height: 30),
                   ],
                 );
@@ -3068,8 +2960,11 @@ jobs:
                         _stat('vivas', fmtInt(count(CheckStatus.live)), AppColors.lime),
                         _stat('sin fondos', fmtInt(count(CheckStatus.noFunds)), AppColors.amber),
                         _stat('pide 3ds', fmtInt(count(CheckStatus.need3ds)), AppColors.cyan),
-                        _stat('cvv/zip malo',
-                            fmtInt(count(CheckStatus.cvcFail) + count(CheckStatus.avsFail)), AppColors.violet),
+                        _stat(
+                          'cvv/zip malo',
+                          fmtInt(count(CheckStatus.cvcFail) + count(CheckStatus.avsFail)),
+                          AppColors.violet,
+                        ),
                         _stat('muertas', fmtInt(count(CheckStatus.dead)), AppColors.red),
                         _stat('sin comprobar', fmtInt(count(CheckStatus.unchecked)), AppColors.textMid),
                         const Divider(color: AppColors.stroke),
@@ -3104,8 +2999,7 @@ jobs:
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(child: Text(t.name, style: AppTextStyles.caption)),
-                                  if (t.note.isNotEmpty)
-                                    Text(t.note, style: AppTextStyles.tiny),
+                                  if (t.note.isNotEmpty) Text(t.note, style: AppTextStyles.tiny),
                                 ],
                               ),
                             ),
@@ -3116,7 +3010,7 @@ jobs:
                   const SectionHeader('Nota honesta'),
                   const GlassPanel(
                     child: Text(
-                      'El "valor estimado" NO es el saldo real: es un rango por BIN. El unico dato duro de saldo lo da un decline por insufficient_funds en modo auth.',
+                      'El valor estimado NO es el saldo real: es un rango por BIN. El unico dato duro de saldo lo da insufficient_funds en modo auth.',
                       style: AppTextStyles.caption,
                     ),
                   ),
@@ -3262,8 +3156,8 @@ jobs:
           import 'package:flutter_riverpod/flutter_riverpod.dart';
           import 'package:http/http.dart' as http;
 
+          import '../checker.dart';
           import '../core.dart';
-          import '../models.dart';
           import '../providers.dart';
           import '../theme.dart';
           import '../widgets.dart';
@@ -3328,7 +3222,7 @@ jobs:
                 _probeMsg = 'probando...';
               });
               final cfg = ref.read(settingsProvider);
-              final engine = CheckEngineForProbe(cfg);
+              final engine = CheckEngine(cfg);
               final a = await engine.probe(stripeTokenUrl);
               final b = await engine.probe(stripePiUrl);
               engine.dispose();
@@ -3402,7 +3296,7 @@ jobs:
                     ],
                   ),
                   const Text(
-                    'Con la key privada la app hace una autorizacion real de \$1 con captura manual: no cobra, solo retiene. Es lo unico que dice la verdad.',
+                    'Con la key privada la app hace una autorizacion real de \$1 con captura manual: no cobra, solo retiene.',
                     style: AppTextStyles.tiny,
                   ),
                   const SectionHeader('Dorkill API key'),
@@ -3461,17 +3355,23 @@ jobs:
               );
             }
           }
-
-          /// Pequeno alias para no arrastrar el engine del provider en ajustes.
-          class CheckEngineForProbe extends CheckEngine {
-            CheckEngineForProbe(super.cfg);
-          }
           DART
 
       - name: Compilar
         run: |
           cd ccheker_live
           flutter pub get
+
+          for g in $(find "$HOME/.pub-cache" -path '*android/build.gradle' 2>/dev/null); do
+            if grep -q "namespace" "$g"; then continue; fi
+            d=$(dirname "$g")
+            kt=$(find "$d/src/main" -name '*.kt' 2>/dev/null | head -n1)
+            if [ -z "$kt" ]; then continue; fi
+            pkg=$(grep -m1 '^package ' "$kt" | sed 's/package //; s/;//; s/[[:space:]]//g')
+            if [ -z "$pkg" ]; then continue; fi
+            sed -i "0,/^android {/s||android {\n    namespace '$pkg'|" "$g"
+          done
+
           flutter analyze --no-fatal-infos || true
           flutter build apk --release
           ls -lh build/app/outputs/flutter-apk/
@@ -3479,5 +3379,5 @@ jobs:
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
-          name: ccheker-live-v7-0
+          name: ccheker-live-v7-1
           path: ccheker_live/build/app/outputs/flutter-apk/app-release.apk
