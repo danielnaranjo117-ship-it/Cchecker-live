@@ -136,6 +136,8 @@ class CheckEngine {
               'currency': 'usd',
               'capture_method': 'manual',
               'confirm': 'true',
+              'automatic_payment_methods[enabled]': 'true',
+              'automatic_payment_methods[allow_redirects]': 'never',
               'payment_method_data[type]': 'card',
               'payment_method_data[card][number]': card.pan,
               'payment_method_data[card][exp_month]': pad2(card.expMonth),
