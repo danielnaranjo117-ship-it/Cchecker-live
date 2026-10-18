@@ -9,14 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_riverpod: ^1^.5.1
-  shared_preferences: ^1^.2.3
-  http: ^2^.2.1
+  flutter_riverpod: ^2^.5.1
+  shared_preferences: ^2^.2.3
+  http: ^1^.2.1
   crypto: ^3^.0.3
   encrypt: ^4^.0.3
-  path_provider: ^1^.1.4
+  path_provider: ^2^.1.4
   share_plus: ^5^.2.1
-  local_auth: ^1^.2.0
+  local_auth: ^2^.2.0
 
 dev_dependencies:
   flutter_test:
