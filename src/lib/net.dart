@@ -41,9 +41,9 @@ Future<ConnectionTask<Socket>> dohFactory(
   String? proxyHost,
   int? proxyPort,
   int timeoutSec,
-) {
-  final fut = _connectVia(uri.host, uri.port, timeoutSec);
-  return ConnectionTask.fromSocket(fut, () {});
+) async {
+  final sock = await _connectVia(uri.host, uri.port, timeoutSec);
+  return ConnectionTask.fromSocket(Future.value(sock), () {});
 }
 
 Future<Socket> _connectVia(String host, int port, int timeoutSec) async {
